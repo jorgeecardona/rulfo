@@ -1,0 +1,116 @@
+[project]
+name = "rulfo"
+dynamic = ["version"]  # the single source of truth is __version__ in src/rulfo/__init__.py (see [tool.hatch.version])
+description = "Messaging between processes where a request gets zero, one or many replies and always an end. Status: design"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Jorge Cardona", email = "jorgeecardona@gmail.com" }]
+keywords = ["messaging", "request-reply", "ipc"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+# docs are an *extra* (not a uv dependency-group) so Read the Docs can install them via pip
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+]
+
+[project.urls]
+Homepage = "https://gitlab.com/cardona-oss/rulfo"
+Repository = "https://gitlab.com/cardona-oss/rulfo"
+Documentation = "https://cardona-oss.gitlab.io/rulfo/"
+Changelog = "https://gitlab.com/cardona-oss/rulfo/-/blob/main/CHANGELOG.md"
+Issues = "https://gitlab.com/cardona-oss/rulfo/-/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# The version lives as __version__ in the package itself; hatchling reads it (by regex, no import) so
+# pyproject and the runtime never disagree. scripts/bump-version rewrites that literal.
+path = "src/rulfo/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rulfo"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[tool.uv]
+# The version is dynamic (hatchling reads __version__ from the file below), so uv must watch it too:
+# declaring cache-keys REPLACES uv's defaults, so pyproject.toml is listed explicitly alongside it.
+# Without __init__.py here, bumping the version would not trigger an editable reinstall.
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/rulfo/__init__.py" }]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "pyright[nodejs]>=1.1.390",
+    "pytest>=8",
+    "prodc>=0.11.4,<0.12",
+    "musil>=0.36.12",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+# The canonical base ignore list shared across the oss/ libraries. E501 (line length) is handled by
+# the formatter; COM812/ISC001 conflict with the formatter; D1/D401 relax docstring presence/mood;
+# TRY003/EM101/EM102 allow inline exception messages; CPY001 drops the copyright-header demand;
+# PLC0415 allows non-top-level imports; TC001/TC002/TC003 don't force type-only import blocks.
+ignore = [
+    "E501",
+    "COM812",
+    "ISC001",
+    "D1",
+    "D401",
+    "TRY003",
+    "EM101",
+    "EM102",
+    "CPY001",
+    "PLC0415",
+    "TC001",
+    "TC002",
+    "TC003",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may assert (S101), use magic values (PLR2004), take unused fixtures (ARG), pass Any to typed
+# calls (ANN401), and group assertions pytest would otherwise split (PT018).
+"tests/**/*.py" = ["S101", "PLR2004", "ARG", "ANN401", "PT018"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rulfo"]
+
+[tool.pyright]
+include = ["src", "tests"]
+extraPaths = ["src"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"

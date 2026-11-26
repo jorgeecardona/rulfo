@@ -1,0 +1,49 @@
+#!/bin/sh
+# Bump __version__ in src/rulfo/__init__.py -- the single source of truth that
+# hatchling reads (pyproject's version is dynamic, via [tool.hatch.version] path) and that the
+# release tag must match.
+#
+# Usage: ./scripts/bump-version [patch|minor|major]   (default: patch)
+#
+# Called automatically by the pre-commit hook when src/ changes; also runnable
+# by hand (or `make bump TYPE=minor`) for an intentional minor/major release.
+
+set -e
+cd "$(dirname "$0")/.."
+
+BUMP_TYPE="${1:-patch}"
+VERSION_FILE="src/rulfo/__init__.py"
+
+CURRENT=$(grep -E '^__version__ = "' "$VERSION_FILE" | head -1 | sed -E 's/^__version__ = "([^"]*)".*/\1/')
+if [ -z "$CURRENT" ]; then
+    echo "bump-version: could not read '__version__ = \"...\"' from $VERSION_FILE" >&2
+    exit 1
+fi
+
+MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+MINOR=$(echo "$CURRENT" | cut -d. -f2)
+PATCH=$(echo "$CURRENT" | cut -d. -f3)
+
+case "$BUMP_TYPE" in
+    major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+    minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+    patch) PATCH=$((PATCH + 1)) ;;
+    *)
+        echo "Usage: $0 [patch|minor|major]" >&2
+        exit 1
+        ;;
+esac
+
+NEW="${MAJOR}.${MINOR}.${PATCH}"
+# Rewrite via a temp file rather than `sed -i`: GNU takes no suffix, BSD/macOS
+# requires one and would otherwise consume `-E` as the backup suffix, leaving a
+# stray backup file. A temp file + mv is portable and leaves no backup. Only the
+# quoted version is replaced, so any trailing comment on the line survives.
+TMP=$(mktemp)
+sed -E "s/^__version__ = \"${CURRENT}\"/__version__ = \"${NEW}\"/" "$VERSION_FILE" > "$TMP"
+mv "$TMP" "$VERSION_FILE"
+
+# No uv.lock sync needed: the version is dynamic (hatchling reads __version__), so uv.lock records
+# this package as an editable path with no pinned version -- bumping the literal leaves the lock untouched.
+
+echo "bump-version: ${CURRENT} -> ${NEW}"
