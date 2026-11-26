@@ -70,10 +70,20 @@ static bool is_utf8(const uint8_t *s, size_t len) {
     return true;
 }
 
+static bool is_zero(const rf_id *id) {
+    uint8_t any = 0;
+    for (size_t i = 0; i < sizeof id->bytes; i++) {
+        any |= id->bytes[i];
+    }
+    return any == 0;
+}
+
 /* The rules that need only the header fields. Decode and encode share them. */
-static rf_status check_header(uint8_t kind, uint8_t flags, size_t key_len, size_t body_len,
-                              uint64_t argument) {
-    switch (kind) {
+static rf_status check_header(const rf_header *header) {
+    uint8_t flags = header->flags;
+    size_t key_len = header->key_len;
+    size_t body_len = header->body_len;
+    switch (header->kind) {
     case RF_REQUEST:
         if ((flags & ~RF_REQUEST_REPEAT) != 0) {
             return RF_ERR_FLAGS;
@@ -94,7 +104,18 @@ static rf_status check_header(uint8_t kind, uint8_t flags, size_t key_len, size_
         if (body_len != 0) {
             return RF_ERR_BODY;
         }
-        return flags != 0 && argument != 0 ? RF_ERR_ARGUMENT : RF_OK;
+        return flags != 0 && header->argument != 0 ? RF_ERR_ARGUMENT : RF_OK;
+    case RF_CLOCK:
+        if (flags != 0) {
+            return RF_ERR_FLAGS;
+        }
+        if (key_len != 0) {
+            return RF_ERR_KEY;
+        }
+        if (body_len != 0) {
+            return RF_ERR_BODY;
+        }
+        return is_zero(&header->id) ? RF_OK : RF_ERR_ID;
     default:
         return RF_ERR_KIND;
     }
@@ -124,10 +145,9 @@ rf_status rf_preface_decode(const uint8_t *in, size_t len, uint16_t *capabilitie
     return RF_OK;
 }
 
-rf_status rf_frame_decode(const uint8_t *in, size_t len, uint32_t max_length, rf_frame *frame,
-                          size_t *size) {
+rf_status rf_header_decode(const uint8_t *in, size_t len, uint32_t max_length,
+                           rf_header *header) {
     if (len < 4) {
-        *size = RF_HEADER_SIZE;
         return RF_NEED_MORE;
     }
     uint32_t length = (uint32_t)load_le(in, 4);
@@ -140,46 +160,31 @@ rf_status rf_frame_decode(const uint8_t *in, size_t len, uint32_t max_length, rf
     }
 #endif
     if (len < RF_HEADER_SIZE) {
-        *size = RF_HEADER_SIZE;
         return RF_NEED_MORE;
     }
 
-    uint8_t kind = in[4];
-    uint8_t flags = in[5];
     size_t key_len = (size_t)load_le(in + 6, 2);
-    uint64_t argument = load_le(in + 24, 8);
     if (key_len > length) {
         return RF_ERR_KEY_LENGTH;
     }
-    rf_status status = check_header(kind, flags, key_len, length - key_len, argument);
+    rf_header read = {.kind = in[4],
+                      .flags = in[5],
+                      .argument = load_le(in + 24, 8),
+                      .key_len = key_len,
+                      .body_len = length - key_len};
+    memcpy(read.id.bytes, in + 8, sizeof read.id.bytes);
+    rf_status status = check_header(&read);
     if (status != RF_OK) {
         return status;
     }
-    /* Before the wait for the body: a bad key must not make the caller buffer a long frame. */
-    if (len - RF_HEADER_SIZE >= key_len && !is_utf8(in + RF_HEADER_SIZE, key_len)) {
-        return RF_ERR_KEY;
-    }
-
-    size_t total = (size_t)RF_HEADER_SIZE + length;
-    if (len < total) {
-        *size = total;
-        return RF_NEED_MORE;
-    }
-    const uint8_t *key = in + RF_HEADER_SIZE;
-    frame->kind = kind;
-    frame->flags = flags;
-    memcpy(frame->id.bytes, in + 8, sizeof frame->id.bytes);
-    frame->argument = argument;
-    frame->key = (rf_bytes){.ptr = key, .len = key_len};
-    frame->body = (rf_bytes){.ptr = key + key_len, .len = length - key_len};
-    *size = total;
+    *header = read;
     return RF_OK;
 }
 
-rf_status rf_frame_encode(const rf_frame *frame, uint32_t max_length, uint8_t *out, size_t cap,
-                          size_t *size) {
-    size_t key_len = frame->key.len;
-    size_t body_len = frame->body.len;
+rf_status rf_header_encode(const rf_header *header, uint32_t max_length,
+                           uint8_t out[RF_HEADER_SIZE]) {
+    size_t key_len = header->key_len;
+    size_t body_len = header->body_len;
     if (key_len > UINT16_MAX) {
         return RF_ERR_KEY_LENGTH;
     }
@@ -188,31 +193,83 @@ rf_status rf_frame_encode(const rf_frame *frame, uint32_t max_length, uint8_t *o
         key_len + body_len > SIZE_MAX - RF_HEADER_SIZE) {
         return RF_ERR_LENGTH;
     }
-    rf_status status = check_header(frame->kind, frame->flags, key_len, body_len, frame->argument);
+    rf_status status = check_header(header);
     if (status != RF_OK) {
         return status;
     }
-    if (!is_utf8(frame->key.ptr, key_len)) {
+    store_le(out, key_len + body_len, 4);
+    out[4] = header->kind;
+    out[5] = header->flags;
+    store_le(out + 6, key_len, 2);
+    memcpy(out + 8, header->id.bytes, sizeof header->id.bytes);
+    store_le(out + 24, header->argument, 8);
+    return RF_OK;
+}
+
+rf_status rf_key_check(rf_bytes key) {
+    return is_utf8(key.ptr, key.len) ? RF_OK : RF_ERR_KEY;
+}
+
+rf_status rf_frame_decode(const uint8_t *in, size_t len, uint32_t max_length, rf_frame *frame,
+                          size_t *size) {
+    rf_header header;
+    rf_status status = rf_header_decode(in, len, max_length, &header);
+    if (status == RF_NEED_MORE) {
+        *size = RF_HEADER_SIZE;
+    }
+    if (status != RF_OK) {
+        return status;
+    }
+    const uint8_t *key = in + RF_HEADER_SIZE;
+    /* Before the wait for the body: a bad key must not make the caller buffer a long frame. */
+    if (len - RF_HEADER_SIZE >= header.key_len && !is_utf8(key, header.key_len)) {
         return RF_ERR_KEY;
     }
 
-    size_t total = (size_t)RF_HEADER_SIZE + key_len + body_len;
+    size_t total = (size_t)RF_HEADER_SIZE + header.key_len + header.body_len;
+    if (len < total) {
+        *size = total;
+        return RF_NEED_MORE;
+    }
+    frame->kind = header.kind;
+    frame->flags = header.flags;
+    frame->id = header.id;
+    frame->argument = header.argument;
+    frame->key = (rf_bytes){.ptr = key, .len = header.key_len};
+    frame->body = (rf_bytes){.ptr = key + header.key_len, .len = header.body_len};
+    *size = total;
+    return RF_OK;
+}
+
+rf_status rf_frame_encode(const rf_frame *frame, uint32_t max_length, uint8_t *out, size_t cap,
+                          size_t *size) {
+    rf_header header = {.kind = frame->kind,
+                        .flags = frame->flags,
+                        .id = frame->id,
+                        .argument = frame->argument,
+                        .key_len = frame->key.len,
+                        .body_len = frame->body.len};
+    uint8_t bytes[RF_HEADER_SIZE];
+    rf_status status = rf_header_encode(&header, max_length, bytes);
+    if (status != RF_OK) {
+        return status;
+    }
+    if (rf_key_check(frame->key) != RF_OK) {
+        return RF_ERR_KEY;
+    }
+
+    size_t total = (size_t)RF_HEADER_SIZE + header.key_len + header.body_len;
     if (cap < total) {
         *size = total;
         return RF_ERR_SPACE;
     }
-    store_le(out, key_len + body_len, 4);
-    out[4] = frame->kind;
-    out[5] = frame->flags;
-    store_le(out + 6, key_len, 2);
-    memcpy(out + 8, frame->id.bytes, sizeof frame->id.bytes);
-    store_le(out + 24, frame->argument, 8);
+    memcpy(out, bytes, sizeof bytes);
     /* memcpy from NULL is undefined, even for 0 bytes. */
-    if (key_len > 0) {
-        memcpy(out + RF_HEADER_SIZE, frame->key.ptr, key_len);
+    if (header.key_len > 0) {
+        memcpy(out + RF_HEADER_SIZE, frame->key.ptr, header.key_len);
     }
-    if (body_len > 0) {
-        memcpy(out + RF_HEADER_SIZE + key_len, frame->body.ptr, body_len);
+    if (header.body_len > 0) {
+        memcpy(out + RF_HEADER_SIZE + header.key_len, frame->body.ptr, header.body_len);
     }
     *size = total;
     return RF_OK;

@@ -23,12 +23,28 @@ static void preface(const uint8_t *data, size_t size) {
     }
 }
 
+/* The header functions refuse what the frame decoder refuses, apart from the key bytes. */
+static void header_agrees(const uint8_t *data, size_t size, uint32_t max_length,
+                          rf_status frame_status) {
+    rf_header header;
+    rf_status status = rf_header_decode(data, size, max_length, &header);
+    if (status != RF_OK) {
+        REQUIRE(frame_status == status);
+        return;
+    }
+    REQUIRE(frame_status == RF_OK || frame_status == RF_NEED_MORE || frame_status == RF_ERR_KEY);
+    uint8_t out[RF_HEADER_SIZE];
+    REQUIRE(rf_header_encode(&header, max_length, out) == RF_OK);
+    REQUIRE(memcmp(out, data, sizeof out) == 0);
+}
+
 static void frames(const uint8_t *data, size_t size, uint32_t max_length) {
     size_t at = 0;
     for (;;) {
         rf_frame frame;
         size_t used = 0;
         rf_status status = rf_frame_decode(data + at, size - at, max_length, &frame, &used);
+        header_agrees(data + at, size - at, max_length, status);
         if (status == RF_NEED_MORE) {
             REQUIRE(used > size - at);
             REQUIRE(used <= (size_t)RF_HEADER_SIZE + max_length);

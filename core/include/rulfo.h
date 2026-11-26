@@ -39,14 +39,16 @@ typedef enum {
     RF_ERR_KIND,       /* unknown kind */
     RF_ERR_FLAGS,      /* unknown flag, or flags that exclude each other */
     RF_ERR_KEY,        /* a key that is not UTF-8, or is on a kind without one, or is missing */
-    RF_ERR_BODY,       /* a body on END */
-    RF_ERR_ARGUMENT    /* END with a flag and a reply count other than 0 */
+    RF_ERR_BODY,       /* a body on END or CLOCK */
+    RF_ERR_ARGUMENT,   /* END with a flag and a reply count other than 0 */
+    RF_ERR_ID          /* CLOCK with an id that is not zero */
 } rf_status;
 
 typedef enum {
     RF_REQUEST = 0x01,
     RF_REPLY = 0x02,
-    RF_END = 0x03
+    RF_END = 0x03,
+    RF_CLOCK = 0x04
 } rf_kind;
 
 /* Bytes the caller owns. `ptr` may be NULL when `len` is 0. */
@@ -63,11 +65,22 @@ typedef struct {
     uint8_t kind; /* an rf_kind */
     uint8_t flags;
     rf_id id;
-    /* REQUEST: milliseconds until the deadline. REPLY: its number. END: replies sent. */
+    /* REQUEST: the deadline, in milliseconds on the requester's clock. REPLY: its number.
+     * END: replies sent. CLOCK: the sender's clock in milliseconds. */
     uint64_t argument;
     rf_bytes key;
     rf_bytes body;
 } rf_frame;
+
+/* The 32 bytes before the key and the body. */
+typedef struct {
+    uint8_t kind; /* an rf_kind */
+    uint8_t flags;
+    rf_id id;
+    uint64_t argument; /* as in rf_frame */
+    size_t key_len;
+    size_t body_len;
+} rf_header;
 
 /* Writes the 8 bytes each side sends before its first frame. */
 void rf_preface_encode(uint16_t capabilities, uint8_t out[RF_PREFACE_SIZE]);
@@ -76,6 +89,23 @@ void rf_preface_encode(uint16_t capabilities, uint8_t out[RF_PREFACE_SIZE]);
  * Returns RF_NEED_MORE when `len` is smaller. `capabilities` is set only on RF_OK and keeps
  * the bits this library does not know. */
 rf_status rf_preface_decode(const uint8_t *in, size_t len, uint16_t *capabilities);
+
+/* Reads a header from the start of `in`, for a caller that streams or skips the key and body.
+ *
+ * RF_OK: `header` is set. The key and the body are the next `key_len` and `body_len` bytes. The
+ * key is not checked: pass it to rf_key_check.
+ * RF_NEED_MORE: `len` is below RF_HEADER_SIZE. `header` is not changed.
+ * Any other status is a protocol error. `header` is not changed. A `length` above `max_length`
+ * is refused after 4 bytes. */
+rf_status rf_header_decode(const uint8_t *in, size_t len, uint32_t max_length, rf_header *header);
+
+/* Writes the RF_HEADER_SIZE bytes of `header`. The caller sends the key and the body after them.
+ * The key is not checked. On any status other than RF_OK nothing is written. */
+rf_status rf_header_encode(const rf_header *header, uint32_t max_length,
+                           uint8_t out[RF_HEADER_SIZE]);
+
+/* RF_OK when `key` is well-formed UTF-8, an empty key included. RF_ERR_KEY otherwise. */
+rf_status rf_key_check(rf_bytes key);
 
 /* Reads one frame from the start of `in`. `max_length` is the largest key plus body accepted.
  *

@@ -157,7 +157,10 @@ static void test_header_rules(void) {
         {RF_END, RF_END_BUSY, 0, 1, RF_ERR_ARGUMENT},
         {RF_END, 0, 1, 0, RF_ERR_KEY},
         {0x00, 0, 0, 0, RF_ERR_KIND},
-        {0x04, 0, 0, 0, RF_ERR_KIND},
+        {RF_CLOCK, 0, 0, 9, RF_OK},
+        {RF_CLOCK, 0x01, 0, 0, RF_ERR_FLAGS},
+        {RF_CLOCK, 0, 1, 0, RF_ERR_KEY},
+        {0x05, 0, 0, 0, RF_ERR_KIND},
         {0x10, 0, 0, 0, RF_ERR_KIND}, /* reserved */
         {0xFF, 0, 0, 0, RF_ERR_KIND},
     };
@@ -168,6 +171,65 @@ static void test_header_rules(void) {
               cases[i].status);
     }
     CHECK(decode_header(RF_REQUEST, 0, 1, 2, 0) == RF_ERR_KEY_LENGTH);
+}
+
+static void test_clock_has_a_zero_id_and_no_body(void) {
+    rf_frame frame = {.kind = RF_CLOCK, .argument = 0x0102};
+    uint8_t out[64];
+    size_t size = 0;
+    CHECK(rf_frame_encode(&frame, MAX, out, sizeof out, &size) == RF_OK);
+    for (size_t i = 0; i < 16; i++) {
+        CHECK(out[8 + i] == 0);
+        rf_frame read;
+        out[8 + i] = 1;
+        CHECK(rf_frame_decode(out, size, MAX, &read, &size) == RF_ERR_ID);
+        out[8 + i] = 0;
+        frame.id.bytes[i] = 1;
+        uint8_t other[64];
+        CHECK(rf_frame_encode(&frame, MAX, other, sizeof other, &size) == RF_ERR_ID);
+        frame.id.bytes[i] = 0;
+        size = RF_HEADER_SIZE;
+    }
+    frame.body = (rf_bytes){.ptr = (const uint8_t *)"x", .len = 1};
+    CHECK(rf_frame_encode(&frame, MAX, out, sizeof out, &size) == RF_ERR_BODY);
+}
+
+static void test_header_alone(void) {
+    /* The header decodes without a byte of the key or the body. */
+    uint8_t *only = malloc(RF_HEADER_SIZE);
+    CHECK(only != NULL);
+    memcpy(only, request_bytes, RF_HEADER_SIZE);
+    rf_header header = {.kind = 99};
+    for (size_t len = 0; len < RF_HEADER_SIZE; len++) {
+        CHECK(rf_header_decode(only, len, MAX, &header) == RF_NEED_MORE);
+        CHECK(header.kind == 99);
+    }
+    CHECK(rf_header_decode(only, RF_HEADER_SIZE, MAX, &header) == RF_OK);
+    CHECK(header.kind == RF_REQUEST && header.flags == RF_REQUEST_REPEAT);
+    CHECK(header.key_len == 2 && header.body_len == 3);
+    CHECK(header.argument == 0x0102030405060708u);
+
+    uint8_t out[RF_HEADER_SIZE];
+    CHECK(rf_header_encode(&header, MAX, out) == RF_OK);
+    CHECK(memcmp(out, request_bytes, sizeof out) == 0);
+
+    memset(out, 0xEE, sizeof out);
+    header.flags = 0x80;
+    CHECK(rf_header_encode(&header, MAX, out) == RF_ERR_FLAGS);
+    CHECK(out[0] == 0xEE && out[RF_HEADER_SIZE - 1] == 0xEE);
+
+    header.kind = 99;
+    CHECK(rf_header_decode(only, 4, 4, &header) == RF_ERR_LENGTH);
+    only[4] = 0x7F;
+    CHECK(rf_header_decode(only, RF_HEADER_SIZE, MAX, &header) == RF_ERR_KIND);
+    CHECK(header.kind == 99);
+    free(only);
+}
+
+static void test_key_check(void) {
+    CHECK(rf_key_check((rf_bytes){.ptr = NULL, .len = 0}) == RF_OK);
+    CHECK(rf_key_check((rf_bytes){.ptr = (const uint8_t *)"a/b", .len = 3}) == RF_OK);
+    CHECK(rf_key_check((rf_bytes){.ptr = (const uint8_t *)"\xC2", .len = 1}) == RF_ERR_KEY);
 }
 
 static void test_bad_header_is_refused_before_the_body(void) {
@@ -338,6 +400,9 @@ int main(void) {
     test_every_prefix_needs_more();
     test_two_frames_in_one_buffer();
     test_header_rules();
+    test_clock_has_a_zero_id_and_no_body();
+    test_header_alone();
+    test_key_check();
     test_bad_header_is_refused_before_the_body();
     test_end_has_no_body();
     test_bad_key_is_refused_before_the_body();
