@@ -3,7 +3,7 @@
 Messaging between processes where a request gets zero, one or many replies and always an end.
 
 Status: early. There is no library to install yet. The repository holds the wire format, the
-operations, a checked model of the first operation and the frame codec in C.
+operations, a checked model of the first operation and its core in C.
 
 ## What is here
 
@@ -11,7 +11,8 @@ operations, a checked model of the first operation and the frame codec in C.
 - `docs/wire-format.md`: the bytes two peers exchange.
 - `docs/model.md`: what the model proves, and what it does not.
 - `models/request_reply.py`: the model of request and replies.
-- `core/`: the frame codec in C11. The API is `core/include/rulfo.h`.
+- `core/`: the frame codec and `rf_peer` (request and replies) in C11, without I/O. The API is
+  `core/include/rulfo.h`.
 
 ## Run the model
 
@@ -22,7 +23,7 @@ uv run python models/request_reply.py
 
 ## Test the C core
 
-Needs cmake and a C compiler. The fuzzer needs clang.
+Needs cmake and a C compiler. The fuzz targets need clang, and `SECONDS` is for each of them.
 
 ```bash
 make core-test
@@ -37,7 +38,7 @@ make fuzz SECONDS=60
 1. Wire format and operations (done).
 2. Model of request and replies (done).
 3. Frame codec in C, with a fuzz target (done, in `core/`).
-4. Request, reply, end and deadline in the C core.
+4. Request, reply, end and deadline in the C core (done, replayed against the model).
 5. Python binding.
 
 ## License

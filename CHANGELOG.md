@@ -19,3 +19,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - C frame codec for wire format version 1, with a libFuzzer target, in `core/`; the header
   can be read and written without the key and the body.
 - Model of request and replies with N repliers, a deadline and faults, in `models/`.
+- `rf_peer` in C: handshake, requests, ordered replies, one outcome, resend after a reconnect,
+  a store of ids, busy refusal and sending replies again. A test replays model runs on it.

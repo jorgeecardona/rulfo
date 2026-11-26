@@ -41,7 +41,7 @@ Rules:
 10. A replier refuses a new request that it cannot accept: its store of ids is full, or the
     deadline is longer than the replier accepts (a setting). It sends an end marked busy and does
     not run the handler. A replier that does not drop repeated ids has no store, so only the
-    deadline applies.
+    deadline applies. A replier refuses before its first reply.
 11. A replier runs or drops a copy marked as sent again. It never answers it with busy or with
     "no handler", because an older copy on the closed connection can still be read and run. It
     refuses another copy only while the connection that brought it is open. If that connection

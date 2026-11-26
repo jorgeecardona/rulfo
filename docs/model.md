@@ -57,6 +57,19 @@ The tests also show that these states can happen:
 They show that one state cannot happen: `completed` after a retry when one of two repliers already
 ran the request.
 
+## The C core
+
+`tests/test_conformance.py` takes 12000 random runs of the model and makes the same calls on the C
+core. After every step the two agree on the outcome, the replies received, the handler starts and
+the replies after the outcome.
+
+It does not replay:
+
+- a copy read from a closed connection: one `rf_peer` has one connection at a time;
+- a deadline that passes on one side only: the test uses one clock;
+- calls that the model never makes, and frames that arrive in pieces. The C tests and the fuzz
+  targets in `core/` cover these.
+
 ## What it does not prove
 
 - Two requests at once. The model has one id, so it does not check that a reply goes to the
@@ -75,4 +88,4 @@ ran the request.
 - More than 2 repliers, more than 2 replies, more than one retry, or more than one fault of
   each kind.
 - The bytes. The model has frames, not the header in [Wire format](wire-format.md).
-- The C code in `core/`. It has its own tests. A later test will replay model traces on it.
+- The C code in `core/`, beyond the runs in [The C core](#the-c-core).

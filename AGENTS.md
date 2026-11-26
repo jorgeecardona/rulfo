@@ -27,8 +27,10 @@ rulfo: Messaging between processes where a request gets zero, one or many replie
 
 - `models/` holds the musil models. They are the specification: change the model and
   `docs/operations.md` before the code. Each property needs a test where it fails.
-- `core/` is the C code. `docs/wire-format.md` is its specification. A change to the bytes needs
-  the doc, `core/tests/test_frame.c` and `make fuzz`.
+- `core/` is the C code. `docs/wire-format.md` and `docs/operations.md` are its specification.
+  A change to the bytes needs the doc, `core/tests/` and `make fuzz`.
+- `tests/c_core.py` calls the C core for the tests. It reads the enum values from `rulfo.h`; its
+  structs copy `rf_config` and `rf_event` and must change with them.
 - The Python package `rulfo` is empty until the binding exists.
 
 - Version lives as `__version__` in `src/rulfo/__init__.py`; `pyproject.toml` reads it via `[tool.hatch.version]` (`version` is `dynamic`). The pre-commit hook auto-bumps it when `src/` changes. Do not edit versions by hand elsewhere.
