@@ -48,7 +48,10 @@ typedef enum {
     RF_ERR_HANDSHAKE,  /* the CLOCK is late, repeated, or another frame came before it */
     RF_ERR_STATE,      /* the call is not valid now */
     RF_ERR_CONFIG,     /* a setting that is out of range */
-    RF_ERR_MEMORY      /* the memory is too small or not aligned */
+    RF_ERR_MEMORY,     /* the memory is too small or not aligned */
+    RF_ERR_NOT_READY,  /* no connection, or its handshake is not done */
+    RF_ERR_FULL,       /* too many open requests */
+    RF_ERR_EXPIRED     /* the deadline has passed */
 } rf_status;
 
 typedef enum {
@@ -142,10 +145,14 @@ rf_status rf_frame_encode(const rf_frame *frame, uint32_t max_length, uint8_t *o
  *
  * Use, for each connection:
  *   1. rf_connected.
- *   2. Send what rf_output gives, now and after every other call.
+ *   2. Send what rf_output gives, now and after every other call. Send it before the bytes of
+ *      a header that a later call gives.
  *   3. Pass received bytes to rf_input until it returns RF_NEED_MORE.
- *   4. Call rf_poll until it gives RF_EV_NONE, again at rf_next_time.
- *   5. On RF_EV_CLOSE, or when the transport ends: rf_disconnected.
+ *   4. Call rf_poll until it gives RF_EV_NONE, again at rf_next_time. Also without a
+ *      connection: requests expire there.
+ *   5. On RF_EV_CLOSE, or when the transport ends: rf_disconnected. Read nothing more from it.
+ *
+ * The core keeps no key and no body. A call that fails changes nothing.
  */
 
 typedef struct rf_peer rf_peer;
@@ -155,20 +162,39 @@ typedef struct {
     uint32_t max_out;         /* bytes of core-made frames that can wait, at least 40 */
     uint32_t handshake_ms;    /* longest wait for the other CLOCK */
     uint32_t keep_ms;         /* how long an id is kept after its deadline, >= handshake_ms */
+    uint32_t max_requests;    /* open requests this side can have */
 } rf_config;
 
 typedef enum {
     RF_EV_NONE = 0,
-    RF_EV_READY, /* the other CLOCK arrived: the connection can be used */
-    RF_EV_CLOSE  /* close the transport and call rf_disconnected; `status` says why */
+    RF_EV_READY,   /* the other CLOCK arrived: the connection can be used */
+    RF_EV_CLOSE,   /* close the transport and call rf_disconnected; `status` says why */
+    RF_EV_REPLY,   /* a reply to a request: `id`, `number`, `flags`, `body` */
+    RF_EV_OUTCOME, /* a request ended: `id`, `outcome`, `number` replies arrived */
+    RF_EV_RESEND   /* send this open request again: rf_request with `id`, `deadline`, repeat 1 */
 } rf_event_kind;
 
+typedef enum {
+    RF_COMPLETED = 0,
+    RF_BUSY,      /* refused: it did not run */
+    RF_EXPIRED,   /* the deadline passed first: it may have run */
+    RF_UNROUTABLE /* no handler for the key: it did not run */
+} rf_outcome;
+
+/* What happened. Only the fields named at the kind are set. `body` points into the `in` of
+ * rf_input and is valid until the caller changes those bytes. */
 typedef struct {
-    uint8_t kind; /* an rf_event_kind */
+    uint8_t kind;    /* an rf_event_kind */
+    uint8_t flags;   /* REPLY: RF_REPLY_ERROR or 0 */
+    uint8_t outcome; /* an rf_outcome */
     rf_status status;
+    rf_id id;
+    uint64_t number;
+    uint64_t deadline; /* on the caller's clock */
+    rf_bytes body;
 } rf_event;
 
-/* The default settings: 16 MiB, 1024 bytes, 5 s and 60 s. */
+/* The default settings: 16 MiB, 1024 bytes, 5 s, 60 s and 64 requests. */
 void rf_config_default(rf_config *config);
 
 /* The bytes of memory a peer with `config` needs. 0 when a setting is out of range. */
@@ -195,13 +221,32 @@ void rf_disconnected(rf_peer *peer);
 rf_status rf_input(rf_peer *peer, const uint8_t *in, size_t len, uint64_t now, size_t *used,
                    rf_event *event);
 
+/* Starts a request, or sends an open one again. Writes its header: the caller sends the header,
+ * then `key.len` bytes of the key and `body_len` bytes of the body. The outcome comes later as
+ * RF_EV_OUTCOME, once.
+ *
+ * `deadline` is on the caller's clock. `repeat` is not 0 when an earlier copy of `id` was sent
+ * and has no end: for an RF_EV_RESEND, and for a copy that another process sent. `id` is 16
+ * bytes that no other request uses.
+ *
+ * RF_ERR_NOT_READY: no connection that can be used. With no earlier copy, the caller can report
+ * the request as unroutable.
+ * RF_WOULD_BLOCK: take the bytes of rf_output first.
+ * RF_ERR_EXPIRED, RF_ERR_FULL, and a codec status for a bad key or length.
+ * RF_ERR_STATE: `id` already has a copy without an end on this connection; or it is open and
+ * `repeat` is 0 or the deadline differs; or `repeat` is set and the other side does not drop
+ * repeated ids. */
+rf_status rf_request(rf_peer *peer, rf_id id, rf_bytes key, size_t body_len, uint64_t deadline,
+                     int repeat, uint64_t now, uint8_t header[RF_HEADER_SIZE]);
+
 /* Moves up to `cap` bytes that the core wants sent into `out`. Returns how many. */
 size_t rf_output(rf_peer *peer, uint8_t *out, size_t cap);
 
 /* Gives one event that is due at `now`, or RF_EV_NONE. */
 void rf_poll(rf_peer *peer, uint64_t now, rf_event *event);
 
-/* When to call rf_poll next. UINT64_MAX: not until another call changes something. */
+/* When to call rf_poll next: a time that has passed means now. UINT64_MAX: not until another
+ * call changes something. */
 uint64_t rf_next_time(const rf_peer *peer);
 
 #ifdef __cplusplus
