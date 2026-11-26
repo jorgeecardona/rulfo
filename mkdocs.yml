@@ -72,5 +72,7 @@ plugins:
 
 nav:
   - Home: index.md
+  - Operations: operations.md
+  - Wire format: wire-format.md
   - API reference: api.md
   - Changelog: changelog.md
