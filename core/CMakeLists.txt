@@ -16,13 +16,16 @@ if(RULFO_SANITIZE OR RULFO_FUZZ)
   add_link_options(${sanitizers})
 endif()
 
-add_library(rulfo STATIC src/frame.c)
+add_library(rulfo STATIC src/frame.c src/peer.c)
 target_include_directories(rulfo PUBLIC include)
 
 enable_testing()
 add_executable(test_frame tests/test_frame.c)
 target_link_libraries(test_frame PRIVATE rulfo)
 add_test(NAME frame COMMAND test_frame)
+add_executable(test_peer tests/test_peer.c)
+target_link_libraries(test_peer PRIVATE rulfo)
+add_test(NAME peer COMMAND test_peer)
 
 if(RULFO_FUZZ)
   # Coverage counters in the library, the fuzzer's main in the target.

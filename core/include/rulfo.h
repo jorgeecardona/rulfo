@@ -1,6 +1,8 @@
-/* rulfo: the frame codec of wire format version 1 (docs/wire-format.md).
+/* rulfo: wire format version 1 (docs/wire-format.md) and the rules of docs/operations.md.
  *
- * The functions do no I/O and allocate no memory. They read and write the caller's buffers.
+ * Two parts: the frame codec, and rf_peer, which holds the state for one remote party.
+ * The functions do no I/O, read no clock and allocate no memory. The caller moves the bytes,
+ * passes the time and gives the memory.
  */
 #ifndef RULFO_H
 #define RULFO_H
@@ -41,7 +43,12 @@ typedef enum {
     RF_ERR_KEY,        /* a key that is not UTF-8, or is on a kind without one, or is missing */
     RF_ERR_BODY,       /* a body on END or CLOCK */
     RF_ERR_ARGUMENT,   /* END with a flag and a reply count other than 0 */
-    RF_ERR_ID          /* CLOCK with an id that is not zero */
+    RF_ERR_ID,         /* CLOCK with an id that is not zero */
+    RF_WOULD_BLOCK,    /* not an error: take the bytes of rf_output, then call again */
+    RF_ERR_HANDSHAKE,  /* the CLOCK is late, repeated, or another frame came before it */
+    RF_ERR_STATE,      /* the call is not valid now */
+    RF_ERR_CONFIG,     /* a setting that is out of range */
+    RF_ERR_MEMORY      /* the memory is too small or not aligned */
 } rf_status;
 
 typedef enum {
@@ -126,6 +133,76 @@ rf_status rf_frame_decode(const uint8_t *in, size_t len, uint32_t max_length, rf
  * On any status other than RF_OK nothing is written to `out`. */
 rf_status rf_frame_encode(const rf_frame *frame, uint32_t max_length, uint8_t *out, size_t cap,
                           size_t *size);
+
+/* ---- One remote party ------------------------------------------------------------------
+ *
+ * An rf_peer holds what outlives a connection, and at most one connection at a time. Every
+ * `now` is milliseconds on one clock that never goes back, does not jump and counts the time
+ * the machine is suspended (rule 14 in docs/operations.md).
+ *
+ * Use, for each connection:
+ *   1. rf_connected.
+ *   2. Send what rf_output gives, now and after every other call.
+ *   3. Pass received bytes to rf_input until it returns RF_NEED_MORE.
+ *   4. Call rf_poll until it gives RF_EV_NONE, again at rf_next_time.
+ *   5. On RF_EV_CLOSE, or when the transport ends: rf_disconnected.
+ */
+
+typedef struct rf_peer rf_peer;
+
+typedef struct {
+    uint32_t max_length;      /* largest key plus body accepted */
+    uint32_t max_out;         /* bytes of core-made frames that can wait, at least 40 */
+    uint32_t handshake_ms;    /* longest wait for the other CLOCK */
+    uint32_t keep_ms;         /* how long an id is kept after its deadline, >= handshake_ms */
+} rf_config;
+
+typedef enum {
+    RF_EV_NONE = 0,
+    RF_EV_READY, /* the other CLOCK arrived: the connection can be used */
+    RF_EV_CLOSE  /* close the transport and call rf_disconnected; `status` says why */
+} rf_event_kind;
+
+typedef struct {
+    uint8_t kind; /* an rf_event_kind */
+    rf_status status;
+} rf_event;
+
+/* The default settings: 16 MiB, 1024 bytes, 5 s and 60 s. */
+void rf_config_default(rf_config *config);
+
+/* The bytes of memory a peer with `config` needs. 0 when a setting is out of range. */
+size_t rf_peer_size(const rf_config *config);
+
+/* Makes a peer in `memory`, which must be aligned as malloc aligns and stay valid while the
+ * peer is used. RF_ERR_CONFIG or RF_ERR_MEMORY: `peer` is not set. */
+rf_status rf_peer_init(void *memory, size_t len, const rf_config *config, rf_peer **peer);
+
+/* Starts a connection. A connection that was open is forgotten. */
+void rf_connected(rf_peer *peer, uint64_t now);
+
+/* Ends the connection. Bytes not yet taken from rf_output are dropped. */
+void rf_disconnected(rf_peer *peer);
+
+/* Reads at most one frame (or the preface) from `in`.
+ *
+ * RF_OK: `used` bytes are consumed and `event` says what happened, often RF_EV_NONE. Pass the
+ * remaining bytes again.
+ * RF_NEED_MORE: nothing is consumed. Add bytes after these and call again.
+ * RF_WOULD_BLOCK: nothing is consumed. Take the bytes of rf_output and call again.
+ * RF_ERR_STATE: there is no open connection.
+ * Any other status is a protocol error: `event` is RF_EV_CLOSE and the connection is over. */
+rf_status rf_input(rf_peer *peer, const uint8_t *in, size_t len, uint64_t now, size_t *used,
+                   rf_event *event);
+
+/* Moves up to `cap` bytes that the core wants sent into `out`. Returns how many. */
+size_t rf_output(rf_peer *peer, uint8_t *out, size_t cap);
+
+/* Gives one event that is due at `now`, or RF_EV_NONE. */
+void rf_poll(rf_peer *peer, uint64_t now, rf_event *event);
+
+/* When to call rf_poll next. UINT64_MAX: not until another call changes something. */
+uint64_t rf_next_time(const rf_peer *peer);
 
 #ifdef __cplusplus
 }

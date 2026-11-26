@@ -1,17 +1,9 @@
 /* The frame codec against the bytes and rules of docs/wire-format.md. */
 #include "rulfo.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "check.h"
 
-#define CHECK(condition)                                                       \
-    do {                                                                       \
-        if (!(condition)) {                                                    \
-            fprintf(stderr, "%s:%d: failed: %s\n", __FILE__, __LINE__, #condition); \
-            exit(1);                                                           \
-        }                                                                      \
-    } while (0)
+#include <string.h>
 
 #define MAX RF_DEFAULT_MAX_LENGTH
 

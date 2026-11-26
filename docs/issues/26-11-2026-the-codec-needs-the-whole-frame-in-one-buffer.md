@@ -1,6 +1,7 @@
 ---
 title: "The codec needs the whole frame in one buffer"
-status: open
+status: done
+fixed_in: 4d93287
 area: core
 filed: 2026-11-26
 scope: S
