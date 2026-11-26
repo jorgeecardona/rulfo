@@ -23,7 +23,12 @@ type Forget = Literal["after_every_deadline", "after_own_deadline", "when_not_ru
 type Repeat = Literal["after_reconnect", "any_time"]
 type Retry = Literal["never", "all_refused", "any_refused"]
 
-REPLY: Literal["reply"] = "reply"
+
+@dataclass(frozen=True)
+class Reply:
+    """One reply frame. ``number`` counts the replies of one replier, from 0."""
+
+    number: int
 
 
 @dataclass(frozen=True)
@@ -37,7 +42,7 @@ class End:
     busy: bool = False
 
 
-type Frame = Literal["reply"] | End
+type Frame = Reply | End
 
 
 @dataclass(frozen=True)
@@ -58,7 +63,12 @@ class Rules:
     - ``retry``: when a requester that got ``busy`` sends the request again: only when every
       replier refused, or when any replier did.
 
-    A replier always looks up the id first: a copy with a known id is dropped, never refused.
+    - ``replays``: whether the program may send the replies again after a copy marked as sent
+      again with a known id: all of them, then the end if it was sent. It can also do nothing.
+    - ``takes_next_only``: whether the requester takes only the next reply number of a replier.
+
+    A replier always looks up the id first: a copy with a known id never runs and is never
+    refused.
     - ``forget``: when a replier may drop the id from its store. ``after_every_deadline`` is the
       design: the keep time ended, so every copy, also one read later, is past its deadline.
       ``after_own_deadline`` waits only for the deadline of the copy that ran.
@@ -87,6 +97,8 @@ class Rules:
     refuses_repeats: bool = False
     refuses_on_closed: bool = False
     reads_old_connection: bool = False
+    replays: bool = True
+    takes_next_only: bool = True
 
 
 @dataclass(frozen=True)
@@ -108,7 +120,7 @@ class Replier:
 
     In the phase ``taken`` the replier read a copy, may still refuse it, and has not started the
     handler. ``taken`` is that copy. ``all_past`` means that the keep time ended: every deadline
-    passed. ``past`` holds the connections whose deadline passed. Only ``after_own_deadline``
+    passed. ``lost_end`` records that a connection drop lost the end of the handler. ``past`` holds the connections whose deadline passed. Only ``after_own_deadline``
     needs ``past`` and keeps ``taken`` after the start: the design drops the unread copies of a
     connection when its deadline passes, which is all that the deadline does there.
     """
@@ -124,6 +136,7 @@ class Replier:
     taken: Copy | None = None
     past: frozenset[int] = frozenset()
     all_past: bool = False
+    lost_end: bool = False
 
 
 @dataclass(frozen=True)
@@ -219,6 +232,25 @@ def _start(rules: Rules, i: int) -> Callable[[World], World]:
     return apply
 
 
+def _may_replay(rules: Rules, r: Replier, copy: Copy) -> bool:
+    """Whether the program can send replies again for ``copy``, and there is something to send."""
+    has_sent = r.sent > 0 or r.phase == "ended"
+    known = rules.dedup and r.remembers and not _is_past(r, copy.conn)
+    return rules.replays and copy.marked and known and has_sent
+
+
+def _replay(i: int, *, old: bool = False) -> Callable[[World], World]:
+    def apply(s: World) -> World:
+        r = s.repliers[i]
+        r = replace(r, old=r.old[1:]) if old else replace(r, inbox=r.inbox[1:])
+        again: tuple[Frame, ...] = tuple(Reply(number) for number in range(r.sent))
+        if r.phase == "ended":
+            again = (*again, End(r.sent))
+        return _with_replier(s, i, replace(r, outbox=(*r.outbox, *again)))
+
+    return apply
+
+
 def _refuse(rules: Rules, i: int) -> Callable[[World], World]:
     def apply(s: World) -> World:
         r = s.repliers[i]
@@ -244,8 +276,12 @@ def _disconnect(rules: Rules, i: int) -> Callable[[World], World]:
             and not s.streams[i].ended
             and s.redeliveries < rules.redeliveries
         )
+        lost = not rules.reads_old_connection and any(
+            isinstance(f, End) and not f.busy for f in r.outbox
+        )
         r = replace(
             r,
+            lost_end=r.lost_end or lost,
             conn=r.conn + 1,
             old=(*r.old, *(Copy(marked, r.conn) for marked in r.inbox)),
             inbox=(True,) if again else (),
@@ -287,7 +323,8 @@ def _taken(r: Replier) -> Copy:
 def _reply(i: int) -> Callable[[World], World]:
     def apply(s: World) -> World:
         r = s.repliers[i]
-        return _with_replier(s, i, replace(r, sent=r.sent + 1, outbox=(*r.outbox, REPLY)))
+        outbox = (*r.outbox, Reply(r.sent))
+        return _with_replier(s, i, replace(r, sent=r.sent + 1, outbox=outbox))
 
     return apply
 
@@ -306,7 +343,7 @@ def _deliver(rules: Rules, i: int) -> Callable[[World], World]:
         head = r.outbox[0]
         s = _with_replier(s, i, replace(r, outbox=r.outbox[1:]))
         if s.outcome is not None:
-            counts_late = head == REPLY and not rules.drops_late_replies
+            counts_late = isinstance(head, Reply) and not rules.drops_late_replies
             return replace(s, late=s.late + 1) if counts_late else s
         if isinstance(head, End):
             if rules.checks_reply_count and not head.busy and head.count != st.received:
@@ -316,6 +353,8 @@ def _deliver(rules: Rules, i: int) -> Callable[[World], World]:
                 return s
             refused = any(x.refused for x in s.streams)
             return replace(s, outcome="busy" if refused else "completed")
+        if rules.takes_next_only and head.number != st.received:
+            return s
         return _with_stream(s, i, replace(st, received=st.received + 1))
 
     return apply
@@ -382,6 +421,25 @@ def _replier_actions(rules: Rules, i: int) -> list[Action[World]]:
             f"R{i}_receive_old",
             lambda s: bool(at(s).old) and at(s).phase not in ("hung", "crashed"),
             _receive(rules, i, old=True),
+        ),
+        # The program sends its replies again instead of doing nothing with the copy.
+        Action(
+            f"R{i}_replay",
+            lambda s: (
+                bool(at(s).inbox)
+                and at(s).phase not in ("hung", "crashed")
+                and _may_replay(rules, at(s), Copy(at(s).inbox[0], at(s).conn))
+            ),
+            _replay(i),
+        ),
+        Action(
+            f"R{i}_replay_old",
+            lambda s: (
+                bool(at(s).old)
+                and at(s).phase not in ("hung", "crashed")
+                and _may_replay(rules, at(s), at(s).old[0])
+            ),
+            _replay(i, old=True),
         ),
         Action(f"R{i}_start", lambda s: at(s).phase == "taken", _start(rules, i), fair="weak"),
         # The store of ids is full, or the deadline is longer than the replier accepts.
@@ -458,6 +516,10 @@ def _refused_did_not_run(s: World) -> bool:
     return all(r.runs == 0 for r, st in pairs if st.refused)
 
 
+def _no_reply_twice(s: World) -> bool:
+    return all(st.received <= r.sent for r, st in zip(s.repliers, s.streams, strict=True))
+
+
 def _no_reply_after_the_end(s: World) -> bool:
     return s.late == 0
 
@@ -505,6 +567,7 @@ def request_model(rules: Rules | None = None) -> Model[World]:
             "runs-at-most-once": _runs_at_most_once,
             "completed-has-every-reply": _completed_has_every_reply,
             "refused-did-not-run": _refused_did_not_run,
+            "no-reply-twice": _no_reply_twice,
             "no-reply-after-the-end": _no_reply_after_the_end,
             "unroutable-iff-no-replier": _unroutable_iff_no_replier,
         },

@@ -253,3 +253,27 @@ def test_answering_a_refusal_on_the_new_connection_makes_busy_wrong() -> None:
         invariant="refused-did-not-run",
         via=["R0_disconnect", "R0_refuse"],
     )
+
+
+def _completed_after_a_lost_end(s: World) -> bool:
+    return s.outcome == "completed" and s.repliers[0].lost_end
+
+
+def test_a_lost_end_can_still_end_completed_when_replies_are_sent_again() -> None:
+    assert _reachable(Rules(), _completed_after_a_lost_end)
+
+
+def test_a_lost_end_gives_no_completed_without_sending_again() -> None:
+    assert not _reachable(Rules(replays=False), _completed_after_a_lost_end)
+
+
+def test_taking_any_reply_number_delivers_a_reply_twice() -> None:
+    assert_violates(
+        check_safety(Rules(takes_next_only=False)),
+        invariant="no-reply-twice",
+        via=["R0_disconnect", "R0_replay"],
+    )
+
+
+def test_without_sending_again_no_reply_arrives_twice_anyway() -> None:
+    assert_ok(check_safety(Rules(takes_next_only=False, replays=False)))

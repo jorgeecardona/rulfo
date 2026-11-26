@@ -22,6 +22,8 @@ ends, one replier crash, one connection drop (up to 2 in the tests) and refusals
 A drop loses every frame toward the requester. The replier can still read the request copy of the
 closed connection, at any later time. After a `busy` outcome, the requester can retry once.
 
+After a copy sent again with a known id, the program sends its replies again or does nothing.
+
 On the replier's side the deadline passes for each connection on its own, at any time: before or
 after the requester's deadline, and before or after the one of another connection.
 
@@ -37,6 +39,7 @@ after the requester's deadline, and before or after the one of another connectio
 | In a `busy` outcome, a replier that refused did not run it | the requester stops reading the old connection | an old busy end arrives while the new copy runs |
 | In a `busy` outcome, a replier that refused did not run it | a refusal is sent only on the connection that brought the copy | the busy end answers a copy sent again, which then runs |
 | `completed` means every reply arrived | the reply count in the end | a reply lost in a connection drop goes unseen |
+| No reply reaches the caller twice | the requester takes only the next reply number | a reply sent again is counted twice |
 | No reply reaches the caller after the outcome | late replies are dropped | a reply in flight at the deadline is delivered |
 | `unroutable` if and only if no replier is connected | the requester detects that there is no replier | the request waits and ends `expired` |
 
@@ -46,6 +49,8 @@ The tests also show that these states can happen:
 - `expired` with a crashed replier after one reply arrived
 - `completed` after a retry of a `busy` request, with one and with two repliers
 - a second `busy` after a retry
+- `completed` after a connection drop lost the end, because it was sent again (without sending
+  again, this state cannot happen)
 - a replier that runs a request after the requester got `expired`
 - `completed` after a replier refused a copy whose connection had closed
 
@@ -60,6 +65,8 @@ ran the request.
 - Why a replier refuses. The model has refusals that can happen to any copy, not a store with a
   size or a longest deadline.
 - A replier that restarts and then refuses a request that it ran before the restart.
+- Sending again in more than one step. The model sends all stored replies and the end at once.
+  A program that limits the replies it stores is the same as one that does nothing.
 - The arithmetic of deadlines. The model assumes that the keep time covers the difference between
   the deadlines of two copies. It does not see a keep time that is too short, or senders whose
   clocks differ too much (rule 14).

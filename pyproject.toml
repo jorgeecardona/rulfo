@@ -63,12 +63,14 @@ dev = [
     "pytest>=8",
     "prodc>=0.11.4,<0.12",
     "musil>=0.36.12",
+    "pytest-parallex>=0.2.8",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["models"]
-addopts = "-q"
+# Two forked workers: the model checks take most of the time, and two leave the machine usable.
+addopts = "-q --parallel=fork --parallel-workers=2"
 
 [tool.ruff]
 line-length = 100

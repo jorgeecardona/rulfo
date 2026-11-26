@@ -31,7 +31,7 @@ tasks:
   # so a feature that quietly needs a newer interpreter is caught at the floor rather than by a
   # user on 3.12. --with-editable . installs this package; pytest is pulled in too.
   test-floor:
-    command: 'uv run --isolated --python 3.12 --with-editable . --with pytest --with musil pytest -q'
+    command: 'uv run --isolated --python 3.12 --with-editable . --with pytest --with pytest-parallex --with musil pytest -q'
     inputs: ['src/**/*.py', 'models/**/*.py', 'tests/**/*.py', 'pyproject.toml']
 
   # The C core, built with AddressSanitizer and UndefinedBehaviorSanitizer. Needs cmake and a C
