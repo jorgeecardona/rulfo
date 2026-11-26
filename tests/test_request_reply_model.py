@@ -217,3 +217,39 @@ def test_such_a_retry_without_dedup_runs_twice() -> None:
 
 def test_a_retry_when_every_replier_refused_needs_no_dedup() -> None:
     assert_ok(check_safety(Rules(repliers=2, max_replies=1, dedup=False, refusals=2)))
+
+
+@pytest.mark.parametrize("last_run_on", [0, 1], ids=["old-copy-read-late", "late-repeat"])
+def test_an_id_kept_only_until_its_own_deadline_runs_twice(last_run_on: int) -> None:
+    def twice(s: World) -> bool:
+        r = s.repliers[0]
+        return r.runs == 2 and r.taken is not None and r.taken.conn == last_run_on
+
+    rules = Rules(forget="after_own_deadline", refusals=0)
+    assert _reachable(rules, twice)
+    design = replace(rules, forget="after_every_deadline")
+    assert not _reachable(design, lambda s: s.repliers[0].runs == 2)
+
+
+def test_a_replier_can_run_a_request_after_the_requester_expired() -> None:
+    assert _reachable(Rules(), lambda s: s.outcome == "expired" and s.repliers[0].phase == "taken")
+
+
+def test_an_id_forgotten_after_every_deadline_never_runs_again() -> None:
+    assert_ok(check_safety(Rules(forget="after_every_deadline", refusals=0, disconnects=2)))
+
+
+def test_a_refusal_after_the_connection_closed_sends_nothing() -> None:
+    # Completed after a refusal and without a retry: the requester never heard of the refusal,
+    # and the copy sent again ran.
+    assert _reachable(
+        Rules(), lambda s: s.refusals == 1 and s.retries == 0 and s.outcome == "completed"
+    )
+
+
+def test_answering_a_refusal_on_the_new_connection_makes_busy_wrong() -> None:
+    assert_violates(
+        check_safety(Rules(refuses_on_closed=True)),
+        invariant="refused-did-not-run",
+        via=["R0_disconnect", "R0_refuse"],
+    )

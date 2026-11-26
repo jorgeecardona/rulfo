@@ -17,9 +17,9 @@ from typing import Literal
 from musil import Action, LivenessResult, Model, Result, check, check_liveness
 
 type Outcome = Literal["completed", "busy", "expired", "unroutable"]
-type Phase = Literal["idle", "running", "ended", "hung", "crashed"]
+type Phase = Literal["idle", "taken", "running", "ended", "hung", "crashed"]
 type Redeliver = Literal["never", "to_dedup", "to_all"]
-type Forget = Literal["after_deadline", "when_not_running", "any_time"]
+type Forget = Literal["after_every_deadline", "after_own_deadline", "when_not_running", "any_time"]
 type Repeat = Literal["after_reconnect", "any_time"]
 type Retry = Literal["never", "all_refused", "any_refused"]
 
@@ -51,14 +51,21 @@ class Rules:
       connection dropped. ``any_time`` also sends it on the same connection, while the first copy
       or its answer is still in flight.
     - ``refuses_repeats``: whether a replier may refuse a copy marked as sent again.
+    - ``refuses_on_closed``: whether a replier that decides to refuse after the copy's connection
+      closed still sends the busy end, on the new connection.
     - ``reads_old_connection``: whether the requester still reads the old connection after it sent
       the request again on a new one.
     - ``retry``: when a requester that got ``busy`` sends the request again: only when every
       replier refused, or when any replier did.
 
     A replier always looks up the id first: a copy with a known id is dropped, never refused.
-    - ``forget``: when a replier may drop the id from its store. A store has a fixed size, so
-      other requests push ids out. ``after_deadline`` is the only safe value.
+    - ``forget``: when a replier may drop the id from its store. ``after_every_deadline`` is the
+      design: the keep time ended, so every copy, also one read later, is past its deadline.
+      ``after_own_deadline`` waits only for the deadline of the copy that ran.
+
+    Each connection gives a copy its own deadline on the replier's clock: it can pass before or
+    after the requester's deadline, and before or after the one of another connection. The model
+    takes as given that the keep time covers the difference. The arithmetic is not modelled.
     """
 
     repliers: int = 1
@@ -67,7 +74,7 @@ class Rules:
     detects_no_replier: bool = True
     dedup: bool = True
     redeliver: Redeliver = "to_dedup"
-    forget: Forget = "after_deadline"
+    forget: Forget = "after_every_deadline"
     checks_reply_count: bool = True
     drops_late_replies: bool = True
     may_hang: bool = True
@@ -78,26 +85,45 @@ class Rules:
     refusals: int = 1
     retry: Retry = "all_refused"
     refuses_repeats: bool = False
+    refuses_on_closed: bool = False
     reads_old_connection: bool = False
+
+
+@dataclass(frozen=True)
+class Copy:
+    """One copy of the request: whether it is marked as sent again, and its connection."""
+
+    marked: bool
+    conn: int
 
 
 @dataclass(frozen=True)
 class Replier:
     """One replier and the frames in flight on its connections.
 
-    ``runs`` counts handler starts. ``inbox`` holds the copies of the request on the current
-    connection that the replier has not read. Each is ``True`` when it is marked as sent again.
-    ``old`` holds the unread copies of closed connections: a replier can still read them.
-    ``outbox`` holds frames not yet received by the requester, in send order.
+    ``runs`` counts handler starts. ``conn`` numbers the current connection. ``inbox`` holds the
+    copies of the request on it that the replier has not read: each is ``True`` when it is marked
+    as sent again. ``old`` holds the unread copies of closed connections: a replier can still
+    read them. ``outbox`` holds frames not yet received by the requester, in send order.
+
+    In the phase ``taken`` the replier read a copy, may still refuse it, and has not started the
+    handler. ``taken`` is that copy. ``all_past`` means that the keep time ended: every deadline
+    passed. ``past`` holds the connections whose deadline passed. Only ``after_own_deadline``
+    needs ``past`` and keeps ``taken`` after the start: the design drops the unread copies of a
+    connection when its deadline passes, which is all that the deadline does there.
     """
 
     phase: Phase = "idle"
     remembers: bool = False
     runs: int = 0
     sent: int = 0
+    conn: int = 0
     inbox: tuple[bool, ...] = ()
-    old: tuple[bool, ...] = ()
+    old: tuple[Copy, ...] = ()
     outbox: tuple[Frame, ...] = ()
+    taken: Copy | None = None
+    past: frozenset[int] = frozenset()
+    all_past: bool = False
 
 
 @dataclass(frozen=True)
@@ -154,22 +180,51 @@ def _redeliver(s: World) -> World:
     return replace(s, repliers=repliers, redeliveries=s.redeliveries + 1)
 
 
+def _is_past(r: Replier, conn: int) -> bool:
+    return r.all_past or conn in r.past
+
+
+def _started(rules: Rules, r: Replier, copy: Copy) -> Replier:
+    """``r`` after it started the handler for ``copy``."""
+    ran = copy if rules.forget == "after_own_deadline" else None
+    return replace(r, phase="running", remembers=True, runs=r.runs + 1, taken=ran)
+
+
 def _receive(rules: Rules, i: int, *, old: bool = False) -> Callable[[World], World]:
     def apply(s: World) -> World:
         r = s.repliers[i]
-        r = replace(r, old=r.old[1:]) if old else replace(r, inbox=r.inbox[1:])
+        if old:
+            copy, r = r.old[0], replace(r, old=r.old[1:])
+        else:
+            copy, r = Copy(r.inbox[0], r.conn), replace(r, inbox=r.inbox[1:])
         repeated = rules.dedup and r.remembers
-        if s.past_deadline or repeated:
+        if _is_past(r, copy.conn) or repeated:
             return _with_replier(s, i, r)
-        return _with_replier(s, i, replace(r, phase="running", remembers=True, runs=r.runs + 1))
+        if r.phase in ("taken", "running"):
+            # Only a replier that does not drop repeats gets here: it starts a second handler.
+            return _with_replier(s, i, replace(r, runs=r.runs + 1))
+        # Without a refusal left, taking and starting in one step reaches the same outcomes.
+        if s.refusals < rules.refusals and (rules.refuses_repeats or not copy.marked):
+            return _with_replier(s, i, replace(r, phase="taken", remembers=True, taken=copy))
+        return _with_replier(s, i, _started(rules, r, copy))
 
     return apply
 
 
-def _refuse(i: int) -> Callable[[World], World]:
+def _start(rules: Rules, i: int) -> Callable[[World], World]:
     def apply(s: World) -> World:
         r = s.repliers[i]
-        refused = replace(r, inbox=r.inbox[1:], outbox=(*r.outbox, End(0, busy=True)))
+        return _with_replier(s, i, _started(rules, r, _taken(r)))
+
+    return apply
+
+
+def _refuse(rules: Rules, i: int) -> Callable[[World], World]:
+    def apply(s: World) -> World:
+        r = s.repliers[i]
+        answers = _taken(r).conn == r.conn or rules.refuses_on_closed
+        outbox = (*r.outbox, End(0, busy=True)) if answers else r.outbox
+        refused = replace(r, phase="idle", remembers=False, taken=None, outbox=outbox)
         return replace(_with_replier(s, i, refused), refusals=s.refusals + 1)
 
     return apply
@@ -191,7 +246,8 @@ def _disconnect(rules: Rules, i: int) -> Callable[[World], World]:
         )
         r = replace(
             r,
-            old=(*r.old, *r.inbox),
+            conn=r.conn + 1,
+            old=(*r.old, *(Copy(marked, r.conn) for marked in r.inbox)),
             inbox=(True,) if again else (),
             outbox=r.outbox if rules.reads_old_connection else (),
         )
@@ -219,6 +275,13 @@ def _may_retry(rules: Rules, s: World) -> bool:
     if s.outcome != "busy" or s.past_deadline or s.retries >= 1:
         return False
     return rules.retry == "any_refused" or all(st.refused for st in s.streams)
+
+
+def _taken(r: Replier) -> Copy:
+    if r.taken is None:
+        msg = "this replier took no copy"
+        raise ValueError(msg)
+    return r.taken
 
 
 def _reply(i: int) -> Callable[[World], World]:
@@ -258,15 +321,50 @@ def _deliver(rules: Rules, i: int) -> Callable[[World], World]:
     return apply
 
 
-def _may_forget(rules: Rules, s: World, r: Replier) -> bool:
-    if not r.remembers:
+def _may_forget(rules: Rules, r: Replier) -> bool:
+    if not r.remembers or rules.forget == "any_time":
+        return r.remembers
+    if r.phase in ("taken", "running", "hung"):
         return False
-    if rules.forget == "any_time":
-        return True
-    handler_is_done = r.phase not in ("running", "hung")
     if rules.forget == "when_not_running":
-        return handler_is_done
-    return handler_is_done and s.past_deadline
+        return True
+    if rules.forget == "after_own_deadline":
+        return r.taken is not None and _is_past(r, r.taken.conn)
+    return rules.deadline
+
+
+def _forget(rules: Rules, i: int) -> Callable[[World], World]:
+    def apply(s: World) -> World:
+        r = replace(s.repliers[i], remembers=False)
+        if rules.forget == "after_every_deadline":
+            r = replace(r, all_past=True, inbox=(), old=())
+        return _with_replier(s, i, r)
+
+    return apply
+
+
+def _may_expire(rules: Rules, r: Replier, conn: int) -> bool:
+    """Whether the deadline of ``conn`` can pass now and change what the replier does."""
+    if not rules.deadline or _is_past(r, conn):
+        return False
+    unread = (conn == r.conn and bool(r.inbox)) or any(c.conn == conn for c in r.old)
+    ran = r.remembers and r.taken is not None and r.taken.conn == conn
+    return unread or (rules.forget == "after_own_deadline" and ran)
+
+
+def _expire(rules: Rules, i: int, conn: int) -> Callable[[World], World]:
+    def apply(s: World) -> World:
+        r = s.repliers[i]
+        r = replace(
+            r,
+            inbox=() if conn == r.conn else r.inbox,
+            old=tuple(c for c in r.old if c.conn != conn),
+        )
+        if rules.forget == "after_own_deadline":
+            r = replace(r, past=r.past | {conn})
+        return _with_replier(s, i, r)
+
+    return apply
 
 
 def _replier_actions(rules: Rules, i: int) -> list[Action[World]]:
@@ -285,18 +383,16 @@ def _replier_actions(rules: Rules, i: int) -> list[Action[World]]:
             lambda s: bool(at(s).old) and at(s).phase not in ("hung", "crashed"),
             _receive(rules, i, old=True),
         ),
+        Action(f"R{i}_start", lambda s: at(s).phase == "taken", _start(rules, i), fair="weak"),
         # The store of ids is full, or the deadline is longer than the replier accepts.
         Action(
             f"R{i}_refuse",
             lambda s: (
                 s.refusals < rules.refusals
-                and bool(at(s).inbox)
-                and (rules.refuses_repeats or not at(s).inbox[0])
-                and at(s).phase not in ("hung", "crashed")
-                and not s.past_deadline
-                and not (rules.dedup and at(s).remembers)
+                and at(s).phase == "taken"
+                and (rules.refuses_repeats or not _taken(at(s)).marked)
             ),
-            _refuse(i),
+            _refuse(rules, i),
         ),
         Action(
             f"R{i}_reply",
@@ -305,11 +401,7 @@ def _replier_actions(rules: Rules, i: int) -> list[Action[World]]:
         ),
         Action(f"R{i}_end", lambda s: at(s).phase == "running", _end(i), fair="weak"),
         Action(f"R{i}_deliver", lambda s: bool(at(s).outbox), _deliver(rules, i), fair="weak"),
-        Action(
-            f"R{i}_forget",
-            lambda s: _may_forget(rules, s, at(s)),
-            lambda s: _with_replier(s, i, replace(at(s), remembers=False)),
-        ),
+        Action(f"R{i}_forget", lambda s: _may_forget(rules, at(s)), _forget(rules, i)),
         Action(
             f"R{i}_crash",
             lambda s: s.crashes < rules.crashes and at(s).phase != "crashed",
@@ -328,6 +420,14 @@ def _replier_actions(rules: Rules, i: int) -> list[Action[World]]:
             _disconnect(rules, i),
         ),
     ]
+    actions.extend(
+        Action(
+            f"R{i}_expire{conn}",
+            lambda s, conn=conn: _may_expire(rules, at(s), conn),
+            _expire(rules, i, conn),
+        )
+        for conn in range(rules.disconnects + 1)
+    )
     if rules.may_hang:
         # A handler that never ends. A dead state, because a run with an enabled action goes on.
         actions.append(

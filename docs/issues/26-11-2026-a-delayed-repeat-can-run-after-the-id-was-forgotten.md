@@ -1,6 +1,7 @@
 ---
 title: "A delayed repeat can run after the id was forgotten"
-status: open
+status: done
+fixed_in: a93ef7c
 area: core
 filed: 2026-11-26
 scope: M
@@ -16,3 +17,8 @@ The model does not show this: it has one deadline that both sides see at the sam
 
 Decide before the connection state machine: a longer time to keep an id, or a different rule. The
 model needs two clocks to check the choice.
+
+Fixed: the deadline is a time on the requester's clock, and the replier keeps the id for the keep
+time after it (rules 7, 8 and 14). The model has one deadline per connection
+(`test_an_id_kept_only_until_its_own_deadline_runs_twice`). The arithmetic of the keep time is
+tested with the C core.
