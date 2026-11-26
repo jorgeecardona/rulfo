@@ -11,4 +11,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Project skeleton.
 - Wire format version 1 and the `request` operation, in `docs/`.
+- Outcome `busy` for a refused request; `replied` is now `completed`; 16 capability bits.
 - Model of request and replies with N repliers, a deadline and faults, in `models/`.

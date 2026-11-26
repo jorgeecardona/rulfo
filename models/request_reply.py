@@ -16,19 +16,25 @@ from typing import Literal
 
 from musil import Action, LivenessResult, Model, Result, check, check_liveness
 
-type Outcome = Literal["replied", "expired", "unroutable"]
+type Outcome = Literal["completed", "busy", "expired", "unroutable"]
 type Phase = Literal["idle", "running", "ended", "hung", "crashed"]
 type Redeliver = Literal["never", "to_dedup", "to_all"]
 type Forget = Literal["after_deadline", "when_not_running", "any_time"]
+type Repeat = Literal["after_reconnect", "any_time"]
+type Retry = Literal["never", "same_id", "new_id"]
 
 REPLY: Literal["reply"] = "reply"
 
 
 @dataclass(frozen=True)
 class End:
-    """The end frame of one replier. ``count`` is the number of replies it sent."""
+    """The end frame of one replier. ``count`` is the number of replies it sent.
+
+    ``busy`` means the replier refused the request.
+    """
 
     count: int
+    busy: bool = False
 
 
 type Frame = Literal["reply"] | End
@@ -41,6 +47,10 @@ class Rules:
     The defaults are the design. Every other value exists for a test that shows a property fail.
 
     - ``redeliver``: who gets the request again. ``to_dedup`` sends it only when ``dedup`` is on.
+    - ``repeat``: when a second copy can be sent. ``after_reconnect`` sends it only when the old
+      connection and every frame on it are gone. ``any_time`` also sends it while the first copy
+      or its answer is still in flight.
+    - ``retry``: whether a requester that got ``busy`` sends the request again, and with which id.
     - ``forget``: when a replier may drop the id from its store. A store has a fixed size, so
       other requests push ids out. ``after_deadline`` is the only safe value.
     """
@@ -58,6 +68,9 @@ class Rules:
     crashes: int = 1
     disconnects: int = 1
     redeliveries: int = 1
+    repeat: Repeat = "after_reconnect"
+    refusals: int = 1
+    retry: Retry = "same_id"
 
 
 @dataclass(frozen=True)
@@ -82,6 +95,7 @@ class Stream:
 
     received: int = 0
     ended: bool = False
+    refused: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,6 +114,8 @@ class World:
     crashes: int = 0
     disconnects: int = 0
     redeliveries: int = 0
+    refusals: int = 0
+    retries: int = 0
 
 
 def _with_replier(s: World, i: int, r: Replier) -> World:
@@ -138,6 +154,61 @@ def _receive(rules: Rules, i: int) -> Callable[[World], World]:
     return apply
 
 
+def _refuse(i: int) -> Callable[[World], World]:
+    def apply(s: World) -> World:
+        r = s.repliers[i]
+        refused = replace(r, inbox=r.inbox - 1, outbox=(*r.outbox, End(0, busy=True)))
+        return replace(_with_replier(s, i, refused), refusals=s.refusals + 1)
+
+    return apply
+
+
+def _resends(rules: Rules) -> bool:
+    return rules.redeliver == "to_all" or (rules.redeliver == "to_dedup" and rules.dedup)
+
+
+def _disconnect(rules: Rules, i: int) -> Callable[[World], World]:
+    def apply(s: World) -> World:
+        r = s.repliers[i]
+        again = (
+            rules.repeat == "after_reconnect"
+            and _resends(rules)
+            and s.outcome is None
+            and not s.streams[i].ended
+            and s.redeliveries < rules.redeliveries
+        )
+        r = replace(r, inbox=1 if again else 0, outbox=())
+        return replace(
+            _with_replier(s, i, r),
+            disconnects=s.disconnects + 1,
+            redeliveries=s.redeliveries + 1 if again else s.redeliveries,
+        )
+
+    return apply
+
+
+def _retry(rules: Rules) -> Callable[[World], World]:
+    """The requester sends a refused request again, with the time that is left."""
+
+    def again(r: Replier) -> Replier:
+        r = replace(r, inbox=r.inbox + 1)
+        if rules.retry == "new_id" and r.phase == "ended":
+            # A replier does not know a new id, so what it remembers does not stop the handler.
+            return replace(r, phase="idle", remembers=False, sent=0)
+        return r
+
+    def apply(s: World) -> World:
+        return replace(
+            s,
+            outcome=None,
+            retries=s.retries + 1,
+            repliers=tuple(again(r) for r in s.repliers),
+            streams=(Stream(),) * len(s.streams),
+        )
+
+    return apply
+
+
 def _reply(i: int) -> Callable[[World], World]:
     def apply(s: World) -> World:
         r = s.repliers[i]
@@ -163,10 +234,13 @@ def _deliver(rules: Rules, i: int) -> Callable[[World], World]:
             counts_late = head == REPLY and not rules.drops_late_replies
             return replace(s, late=s.late + 1) if counts_late else s
         if isinstance(head, End):
-            if rules.checks_reply_count and head.count != st.received:
+            if rules.checks_reply_count and not head.busy and head.count != st.received:
                 return s
-            s = _with_stream(s, i, replace(st, ended=True))
-            return replace(s, outcome="replied") if all(x.ended for x in s.streams) else s
+            s = _with_stream(s, i, replace(st, ended=True, refused=head.busy))
+            if not all(x.ended for x in s.streams):
+                return s
+            refused = any(x.refused for x in s.streams)
+            return replace(s, outcome="busy" if refused else "completed")
         return _with_stream(s, i, replace(st, received=st.received + 1))
 
     return apply
@@ -194,6 +268,18 @@ def _replier_actions(rules: Rules, i: int) -> list[Action[World]]:
             _receive(rules, i),
             fair="weak",
         ),
+        # The store of ids is full, or the deadline is longer than the replier accepts.
+        Action(
+            f"R{i}_refuse",
+            lambda s: (
+                s.refusals < rules.refusals
+                and at(s).inbox > 0
+                and at(s).phase not in ("hung", "crashed")
+                and not s.past_deadline
+                and not (rules.dedup and at(s).remembers)
+            ),
+            _refuse(i),
+        ),
         Action(
             f"R{i}_reply",
             lambda s: at(s).phase == "running" and at(s).sent < rules.max_replies,
@@ -216,11 +302,12 @@ def _replier_actions(rules: Rules, i: int) -> list[Action[World]]:
         # The connection drops and comes back: every frame in flight on it is lost.
         Action(
             f"R{i}_disconnect",
-            lambda s: s.disconnects < rules.disconnects and (at(s).inbox > 0 or bool(at(s).outbox)),
-            lambda s: replace(
-                _with_replier(s, i, replace(at(s), inbox=0, outbox=())),
-                disconnects=s.disconnects + 1,
+            lambda s: (
+                s.disconnects < rules.disconnects
+                and s.sent
+                and (s.outcome is None or at(s).inbox > 0 or bool(at(s).outbox))
             ),
+            _disconnect(rules, i),
         ),
     ]
     if rules.may_hang:
@@ -239,11 +326,18 @@ def _runs_at_most_once(s: World) -> bool:
     return all(r.runs <= 1 for r in s.repliers)
 
 
-def _replied_is_complete(s: World) -> bool:
-    if s.outcome != "replied":
+def _completed_has_every_reply(s: World) -> bool:
+    if s.outcome != "completed":
         return True
     pairs = zip(s.repliers, s.streams, strict=True)
     return all(st.ended and st.received == r.sent for r, st in pairs)
+
+
+def _refused_did_not_run(s: World) -> bool:
+    if s.outcome != "busy":
+        return True
+    pairs = zip(s.repliers, s.streams, strict=True)
+    return all(r.runs == 0 for r, st in pairs if st.refused)
 
 
 def _no_reply_after_the_end(s: World) -> bool:
@@ -259,17 +353,25 @@ def _unroutable_iff_no_replier(s: World) -> bool:
 def request_model(rules: Rules | None = None) -> Model[World]:
     """One request under ``rules``. ``Rules()`` is the design in ``docs/operations.md``."""
     rules = rules or Rules()
-    resends = rules.redeliver == "to_all" or (rules.redeliver == "to_dedup" and rules.dedup)
     actions: list[Action[World]] = [
         Action("send", lambda s: not s.sent, _send(rules), fair="weak"),
-        Action(
-            "redeliver",
-            lambda s: (
-                resends and s.sent and s.outcome is None and s.redeliveries < rules.redeliveries
-            ),
-            _redeliver,
-        ),
     ]
+    if rules.repeat == "any_time" and _resends(rules):
+        actions.append(
+            Action(
+                "redeliver",
+                lambda s: s.sent and s.outcome is None and s.redeliveries < rules.redeliveries,
+                _redeliver,
+            )
+        )
+    if rules.retry != "never":
+        actions.append(
+            Action(
+                "retry",
+                lambda s: s.outcome == "busy" and not s.past_deadline and s.retries < 1,
+                _retry(rules),
+            )
+        )
     if rules.deadline:
         actions.append(
             Action(
@@ -289,7 +391,8 @@ def request_model(rules: Rules | None = None) -> Model[World]:
         actions=actions,
         invariants={
             "runs-at-most-once": _runs_at_most_once,
-            "replied-is-complete": _replied_is_complete,
+            "completed-has-every-reply": _completed_has_every_reply,
+            "refused-did-not-run": _refused_did_not_run,
             "no-reply-after-the-end": _no_reply_after_the_end,
             "unroutable-iff-no-replier": _unroutable_iff_no_replier,
         },
@@ -298,7 +401,7 @@ def request_model(rules: Rules | None = None) -> Model[World]:
 
 
 def check_safety(rules: Rules | None = None) -> Result[World]:
-    """Check the four invariants in every reachable state."""
+    """Check the invariants in every reachable state."""
     return check(request_model(rules))
 
 

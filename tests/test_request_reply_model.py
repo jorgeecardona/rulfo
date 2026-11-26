@@ -30,18 +30,18 @@ def test_the_design_keeps_every_invariant_and_always_ends(rules: Rules) -> None:
     assert_ok(check_ends(rules))
 
 
-def test_a_request_can_end_replied_with_zero_replies() -> None:
-    assert _reachable(Rules(), lambda s: s.outcome == "replied" and s.streams[0].received == 0)
+def test_a_request_can_end_completed_with_zero_replies() -> None:
+    assert _reachable(Rules(), lambda s: s.outcome == "completed" and s.streams[0].received == 0)
 
 
-def test_a_request_can_end_replied_with_many_replies() -> None:
-    assert _reachable(Rules(), lambda s: s.outcome == "replied" and s.streams[0].received == 2)
+def test_a_request_can_end_completed_with_many_replies() -> None:
+    assert _reachable(Rules(), lambda s: s.outcome == "completed" and s.streams[0].received == 2)
 
 
 def test_two_repliers_can_both_reply() -> None:
     assert _reachable(
         Rules(repliers=2, max_replies=1),
-        lambda s: s.outcome == "replied" and all(st.received == 1 for st in s.streams),
+        lambda s: s.outcome == "completed" and all(st.received == 1 for st in s.streams),
     )
 
 
@@ -56,12 +56,12 @@ def test_a_crashed_replier_gives_expired_and_keeps_the_replies_that_arrived() ->
     )
 
 
-def test_one_dead_replier_of_two_gives_expired_not_replied() -> None:
+def test_one_dead_replier_of_two_gives_expired_not_completed() -> None:
     rules = Rules(repliers=2, max_replies=1)
     dead_before_end = _reachable(
         rules,
         lambda s: (
-            s.outcome == "replied"
+            s.outcome == "completed"
             and any(
                 r.phase in ("hung", "crashed") and not st.ended
                 for r, st in zip(s.repliers, s.streams, strict=True)
@@ -119,7 +119,7 @@ def test_forgetting_the_id_before_the_deadline_runs_the_request_twice(rules: Rul
 def test_an_end_without_the_reply_count_hides_a_lost_reply() -> None:
     assert_violates(
         check_safety(Rules(checks_reply_count=False)),
-        invariant="replied-is-complete",
+        invariant="completed-has-every-reply",
         via=["R0_disconnect"],
     )
     assert_ok(check_safety(Rules(checks_reply_count=False, disconnects=0)))
@@ -134,3 +134,56 @@ def test_a_reply_after_the_outcome_reaches_the_caller_unless_dropped() -> None:
 def test_the_fault_free_model_is_a_strict_subset() -> None:
     assert_ok(check_safety(NO_FAULTS))
     assert not _reachable(NO_FAULTS, lambda s: s.outcome == "expired" and s.streams[0].ended)
+
+
+def test_a_replier_that_refuses_gives_busy_and_runs_nothing() -> None:
+    assert _reachable(Rules(), lambda s: s.outcome == "busy" and s.repliers[0].runs == 0)
+    assert not _reachable(Rules(), lambda s: s.outcome == "busy" and s.repliers[0].runs > 0)
+
+
+def test_without_a_refusal_there_is_no_busy() -> None:
+    assert not _reachable(Rules(refusals=0), lambda s: s.outcome == "busy")
+
+
+def test_a_second_copy_on_the_same_connection_makes_busy_wrong() -> None:
+    assert_violates(
+        check_safety(Rules(repeat="any_time")),
+        invariant="refused-did-not-run",
+        via=["R0_refuse", "redeliver"],
+    )
+
+
+def test_a_second_copy_at_any_time_still_runs_at_most_once() -> None:
+    result = check_safety(Rules(repeat="any_time", refusals=0))
+    assert_ok(result)
+
+
+def test_a_retry_after_busy_can_complete() -> None:
+    assert _reachable(Rules(), lambda s: s.retries == 1 and s.outcome == "completed")
+
+
+def test_a_retry_with_a_new_id_is_safe_with_one_replier() -> None:
+    assert_ok(check_safety(Rules(retry="new_id")))
+
+
+def test_a_retry_with_a_new_id_runs_twice_with_two_repliers() -> None:
+    assert_violates(
+        check_safety(Rules(repliers=2, max_replies=1, retry="new_id")),
+        invariant="runs-at-most-once",
+        via=["retry"],
+    )
+
+
+def test_a_retry_to_two_repliers_without_dedup_runs_twice() -> None:
+    assert_violates(
+        check_safety(Rules(repliers=2, max_replies=1, dedup=False)),
+        invariant="runs-at-most-once",
+        via=["retry"],
+    )
+
+
+def test_a_retry_to_two_repliers_can_expire_with_one_that_already_ran_it() -> None:
+    assert _reachable(
+        Rules(repliers=2, max_replies=1, may_hang=False, crashes=0, disconnects=0),
+        lambda s: s.retries == 1 and s.outcome == "expired" and s.repliers[1].runs == 1,
+    )
