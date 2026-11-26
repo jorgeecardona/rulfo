@@ -52,24 +52,44 @@ A frame is a 32-byte header, then the key, then the body.
 | 8 | 16 | id | the request id |
 | 24 | 8 | argument | per kind |
 
-The key is UTF-8. The body is opaque bytes. END has no body. The largest `length` a peer accepts
+The key is UTF-8. The body is opaque bytes. END and CLOCK have no body. The id of CLOCK is 16
+zero bytes. The largest `length` a peer accepts
 is a setting, 16 MiB by default. A longer frame is a protocol error.
 
 ## Kinds
 
 | Kind | Name | Sender | Key | Argument | Flags |
 |---|---|---|---|---|---|
-| `0x01` | REQUEST | requester | 1 byte or more | milliseconds until the deadline | bit 0: sent again, an earlier copy of this id has no end |
+| `0x01` | REQUEST | requester | 1 byte or more | the deadline, a time on the requester's clock | bit 0: sent again, an earlier copy of this id has no end |
 | `0x02` | REPLY | replier | no | number of this reply, from 0 | bit 0: the body is an error |
 | `0x03` | END | replier | no | number of replies sent | bit 0: no handler for the key. bit 1: busy, the request was refused |
+| `0x04` | CLOCK | both sides | no | the sender's clock now | none |
 
 Kinds `0x10` to `0x3F` are reserved for the operations that are not designed yet. Every other
 value is unassigned.
 
+## Clocks and deadlines
+
+Each side sends one CLOCK on each connection. It is its first frame, and it sends it after it read
+the other preface.
+
+A clock value is milliseconds from any start point. The clock never goes back, does not jump and
+counts the time the machine is suspended (on Linux, `CLOCK_BOOTTIME`).
+
+The argument of REQUEST is a time on the requester's clock. The replier converts it:
+
+```text
+deadline here = own clock when it read the CLOCK + (argument - argument of that CLOCK)
+```
+
+A result below zero is zero. A result above the largest 64-bit number is that number.
+
+A side measures the time from sending its preface to reading the other CLOCK. Above the handshake
+limit (a setting, 5 s by default), it closes the connection. So a converted deadline is late by at
+most that limit. [Operations](operations.md#clocks) says how long a replier keeps an id.
+
 ## Rules
 
-- Deadline: the argument of REQUEST is a duration, not a time of day. Each side counts it on its
-  own monotonic clock, from the moment it sent or received the frame.
 - Protocol error, and the peer closes the connection:
     - `length` above the largest accepted
     - key length above `length`, or a key that is not valid UTF-8
@@ -78,6 +98,9 @@ value is unassigned.
     - END with a body
     - END with both flags
     - END with a flag and an argument other than `0`
+    - CLOCK with a key, a body, a flag or a non-zero id
+    - a second CLOCK, or another frame before the CLOCK
+    - no CLOCK within the handshake limit
 - REPLY or END for an id with no open request: dropped. Not an error.
 - A replier sends END with a flag only for a REQUEST without bit 0.
 - END with bit 0 from every peer: the outcome is `unroutable`.
