@@ -20,11 +20,24 @@ Each side sends 8 bytes once, before any frame.
 |---|---|---|---|
 | 0 | 4 | magic | `52 55 4C 46` (`RULF`) |
 | 4 | 1 | version | `1` |
-| 5 | 1 | capabilities | bit 0: this peer drops repeated request ids |
-| 6 | 2 | reserved | `0` |
+| 5 | 1 | reserved | `0` |
+| 6 | 2 | capabilities | one bit for each optional behaviour |
 
-A peer that reads a wrong magic or a version it does not implement closes the connection. There
-is no negotiation in version 1.
+| Capability bit | Meaning |
+|---|---|
+| 0 | this peer drops repeated request ids |
+| 1 to 15 | not assigned |
+
+A peer that reads a wrong magic, a version it does not implement or a non-zero reserved byte
+closes the connection.
+
+## Additions to version 1
+
+A new kind or flag gets its own capability bit.
+
+- A peer sends it only after it read a preface that has the bit.
+- A peer ignores capability bits that it does not know.
+- Everything on this page is part of version 1 and needs no bit, the busy flag of END included.
 
 ## Frame
 
@@ -48,7 +61,7 @@ The key is UTF-8. The body is opaque bytes. The largest `length` a peer accepts 
 |---|---|---|---|---|---|
 | `0x01` | REQUEST | requester | yes | milliseconds until the deadline | bit 0: sent again after a reconnect |
 | `0x02` | REPLY | replier | no | number of this reply, from 0 | bit 0: the body is an error |
-| `0x03` | END | replier | no | number of replies sent | bit 0: no handler for the key |
+| `0x03` | END | replier | no | number of replies sent | bit 0: no handler for the key. bit 1: busy, the request was refused |
 
 Kinds `0x10` to `0x3F` are reserved for the operations that are not designed yet. Every other
 value is unassigned.
@@ -57,14 +70,19 @@ value is unassigned.
 
 - Deadline: the argument of REQUEST is a duration, not a time of day. Each side counts it on its
   own monotonic clock, from the moment it sent or received the frame.
-- Unknown kind, non-zero unused flag, or key length above `length`: protocol error. The peer
-  closes the connection.
+- Protocol error, and the peer closes the connection:
+    - `length` above the largest accepted
+    - key length above `length`, or a key that is not valid UTF-8
+    - unknown kind, or non-zero unused flag
+    - a key on a kind that has no key
+    - END with both flags
+    - END with a flag and an argument other than `0`
 - REPLY or END for an id with no open request: dropped. Not an error.
 - END with bit 0 from every peer: the outcome is `unroutable`.
+- END from every peer, at least one with bit 1: the outcome is `busy`.
 
 ## Open questions
 
-- A replier whose store of ids is full of requests that have not expired. It cannot forget one
-  (rule 7 of `request`). The frame that refuses a new request is not defined.
 - A frame that tells a replier to stop work, when the requester no longer waits.
-- Replies lost in a reconnect are not sent again. The requester sees `expired`.
+- Replies lost in a reconnect are not sent again: a repeat of an ended id gets no answer, and the
+  requester sees `expired`. Not decided: whether the host may send the replies again.
