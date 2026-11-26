@@ -64,8 +64,9 @@ and whether the end was sent. The program stores the replies: rulfo does not.
 
 The program chooses one of two:
 
-- Send the replies again: all of them, from number 0, in order, before any new reply. Then send
-  the end again, if it was sent.
+- Send the replies again: all of them, from number 0, in order, up to the newest one. Then send
+  the end again, if it was sent. A new reply that was sent before this is dropped by the
+  requester, and is part of what is sent again.
 - Send nothing. If a reply or the end was lost, the outcome is `expired`.
 
 The program keeps stored replies no longer than the replier keeps the id. It may keep fewer, for
@@ -88,8 +89,10 @@ Limits:
 - rulfo does not check rule 14. Senders that differ by more can make a request run twice.
 - With senders that differ, a replier can drop a copy shortly before the real deadline. The copy
   does not run, and the outcome is `expired`.
-- A replier that restarts forgets its ids, and can run a copy again. Storing ids on disk is not
-  designed yet.
+- A replier that restarts forgets its ids, and can run a copy again. The requester can then get
+  replies of both runs in one `completed` outcome. Storing ids on disk is not designed yet.
+- Every copy of an id must reach the store that holds it. In the C core that is one `rf_peer` for
+  one remote party, also when that party has several processes.
 
 What a replier that crashed looks like to the requester: no end arrives, and the outcome is
 `expired`.

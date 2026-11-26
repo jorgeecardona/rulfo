@@ -45,6 +45,10 @@ typedef struct {
     uint64_t brought[IDS]; /* the connection that brought it */
     uint64_t connection;
     bool greeted;
+    uint8_t sent[256]; /* bytes taken from rf_output and not checked yet */
+    size_t sent_len;
+    bool preface_sent;
+    size_t unmarked[IDS]; /* unmarked requests received since the connect, less busy ends */
     bool clean; /* only a greeting and then whole well-formed frames since the connect */
 } world;
 
@@ -139,6 +143,37 @@ static bool put(world *w, const uint8_t *bytes, size_t len) {
     return true;
 }
 
+/* Checks what the core wants sent: after the preface, only the CLOCK and busy ends. A busy end
+ * answers an unmarked request (rule 11). */
+static void check_output(world *w, size_t cap) {
+    size_t room = sizeof w->sent - w->sent_len;
+    w->sent_len += rf_output(w->peer, w->sent + w->sent_len, cap < room ? cap : room);
+    for (;;) {
+        size_t size = w->preface_sent ? RF_HEADER_SIZE : RF_PREFACE_SIZE;
+        if (w->sent_len < size) {
+            return;
+        }
+        if (!w->preface_sent) {
+            uint16_t capabilities = 0;
+            REQUIRE(rf_preface_decode(w->sent, size, &capabilities) == RF_OK);
+            w->preface_sent = true;
+        } else {
+            rf_header header;
+            REQUIRE(rf_header_decode(w->sent, size, 0, &header) == RF_OK);
+            if (header.kind != RF_CLOCK) {
+                REQUIRE(header.kind == RF_END && header.flags == RF_END_BUSY);
+                uint8_t n = header.id.bytes[0];
+                if (w->clean && n < IDS) {
+                    REQUIRE(w->unmarked[n] > 0);
+                    w->unmarked[n]--;
+                }
+            }
+        }
+        memmove(w->sent, w->sent + size, w->sent_len - size);
+        w->sent_len -= size;
+    }
+}
+
 static void frame_from(world *w, source *s) {
     uint8_t body[16] = {0};
     rf_frame frame = {0};
@@ -175,6 +210,9 @@ static void frame_from(world *w, source *s) {
     if (first > BUFFER - w->in_len || written > BUFFER - w->in_len) {
         return;
     }
+    if (frame.kind == RF_REQUEST && frame.flags == 0) {
+        w->unmarked[frame.id.bytes[0]]++;
+    }
     REQUIRE(put(w, out, first));
     read_input(w);
     REQUIRE(put(w, out + first, written - first) || !w->clean);
@@ -185,6 +223,9 @@ static void connect(world *w) {
     w->in_len = 0;
     w->greeted = false;
     w->clean = true;
+    w->sent_len = 0;
+    w->preface_sent = false;
+    memset(w->unmarked, 0, sizeof w->unmarked);
 }
 
 static void call(world *w, source *s) {
@@ -227,12 +268,10 @@ static void call(world *w, source *s) {
         read_input(w);
         break;
     }
-    case 5: {
-        uint8_t out[64];
-        (void)rf_output(w->peer, out, take(s) % sizeof out);
+    case 5:
+        check_output(w, take(s) % 64);
         read_input(w);
         break;
-    }
     case 6:
         w->now += take(s) % 2 ? take(s) : (uint64_t)take(s) * 1000;
         break;
@@ -311,6 +350,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     source s = {.data = data, .len = size};
     while (s.len > 0) {
         call(&w, &s);
+    }
+    /* At the end of time every open request has had its one outcome. */
+    w.now = UINT64_MAX;
+    rf_event event;
+    do {
+        rf_poll(w.peer, w.now, &event);
+        check_event(&w, &event);
+    } while (event.kind != RF_EV_NONE);
+    for (size_t n = 0; n < IDS; n++) {
+        REQUIRE(!w.open[n]);
     }
     free(memory);
     return 0;

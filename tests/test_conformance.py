@@ -1,8 +1,8 @@
 """The C core replays runs of the request model, and shows the requester the same things.
 
 Each walk takes random actions of the model and makes the matching calls on the C core. After
-every action the two agree on the outcome, the replies received from each replier, the handler
-starts and the replies delivered after the outcome.
+every action the two agree on the outcome, the replies received from each replier, the requests
+given to each handler and the replies delivered after the outcome.
 
 Not replayed, because one clock and one ``rf_peer`` per replier cannot produce them:
 
@@ -44,7 +44,8 @@ class Pair:
     copies: deque[bytes] = field(default_factory=deque[bytes])
     frames: deque[bytes] = field(default_factory=deque[bytes])
     received: int = 0
-    runs: int = 0
+    requests: int = 0  # RF_EV_REQUEST events of the replier
+    refused: int = 0  # calls of rf_refuse
     outcome: str | None = None
 
 
@@ -125,7 +126,7 @@ class Run:
             self.now = max(self.now, DEADLINE)
             for pair in self.pairs:
                 self._poll_requester(pair)
-            self.outcome = self.outcome or "expired"
+                assert pair.outcome is not None
         else:
             replier, action = name.split("_", 1)
             self._apply_replier(int(replier[1:]), action, before, after)
@@ -140,8 +141,6 @@ class Run:
             self._receive(pair, old, new)
         elif action == "replay":
             self._replay(pair, old.sent, ended=old.phase == "ended")
-        elif action == "start":
-            pair.runs += 1
         elif action == "deliver":
             self._take(pair, self._read(pair.requester, pair.frames.popleft()))
         elif action == "disconnect":
@@ -152,7 +151,7 @@ class Run:
             if int(action.removeprefix("expire")) == new.conn:
                 self._drop_copies(pair)
         else:
-            assert action in ("hang", "crash")
+            assert action in ("start", "hang", "crash")
 
     def _answer(self, pair: Pair, action: str, old: Replier, new: Replier) -> None:
         """A call of the handler: a reply, the end or a refusal."""
@@ -161,6 +160,7 @@ class Run:
         elif action == "end":
             status, frame = pair.replier.end(REQUEST_ID)
         else:
+            pair.refused += 1
             status, frame = pair.replier.refuse(REQUEST_ID)
             if len(new.outbox) == len(old.outbox):
                 assert status == STATUS["RF_DROPPED"]
@@ -176,7 +176,7 @@ class Run:
         taken = old.phase not in ("taken", "running") and new.phase in ("taken", "running")
         if taken:
             assert event.kind == EVENT["RF_EV_REQUEST"]
-            pair.runs += new.runs - old.runs
+            pair.requests += 1
         elif marked and old.remembers:
             assert event.kind == EVENT["RF_EV_REPEAT"]
             assert (event.number, event.ended) == (old.sent, old.phase == "ended")
@@ -222,7 +222,10 @@ class Run:
     def agrees_with(self, s: World) -> None:
         assert self.outcome == s.outcome
         assert [p.received for p in self.pairs] == [st.received for st in s.streams]
-        assert [p.runs for p in self.pairs] == [r.runs for r in s.repliers]
+        # Each request the core gave was started, refused, or still waits for that decision.
+        assert [p.requests - p.refused for p in self.pairs] == [
+            r.runs + (r.taken is not None) for r in s.repliers
+        ]
         assert [p.outcome in ("completed", "busy") for p in self.pairs] == [
             st.ended for st in s.streams
         ]

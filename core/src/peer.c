@@ -30,6 +30,7 @@ typedef struct {
     uint64_t deadline;   /* of the copy that was taken, on our clock */
     uint64_t replies;    /* sent so far, and the number of the next one */
     uint64_t brought_on; /* the connection that brought that copy */
+    uint64_t repeated_on; /* the connection that RF_EV_REPEAT was given for */
     bool used;
     bool ended;
     bool marked; /* that copy was marked as sent again */
@@ -63,7 +64,7 @@ void rf_config_default(rf_config *config) {
                           .handshake_ms = 5000,
                           .keep_ms = 60000,
                           .max_requests = 64,
-                          .max_ids = 512,
+                          .max_ids = 4096,
                           .max_deadline_ms = 3600000};
 }
 
@@ -329,10 +330,13 @@ static rf_status read_request(rf_peer *peer, const rf_header *header, const uint
         return drop(peer, header, len, used);
     }
     bool marked = (header->flags & RF_REQUEST_REPEAT) != 0;
-    const taken *known = find_taken(peer, &header->id);
+    taken *known = find_taken(peer, &header->id);
     if (known != NULL) {
-        /* A known id never runs again (rule 9). */
-        if (marked) {
+        /* A known id never runs again (rule 9). A connection carries one copy (rule 12), so
+         * a second one asks for nothing. */
+        if (marked && known->brought_on != peer->connection &&
+            known->repeated_on != peer->connection) {
+            known->repeated_on = peer->connection;
             event->kind = RF_EV_REPEAT;
             event->id = known->id;
             event->number = known->replies;

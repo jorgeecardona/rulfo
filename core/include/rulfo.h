@@ -156,6 +156,17 @@ rf_status rf_frame_encode(const rf_frame *frame, uint32_t max_length, uint8_t *o
  *   5. On RF_EV_CLOSE, or when the transport ends: rf_disconnected. Read nothing more from it.
  *
  * The core keeps no key and no body. A call that fails changes nothing.
+ *
+ * Frames must not interleave on the wire. Hold one write lock from the call that writes a header
+ * until the last byte of its key and body is written, and send what rf_output gives only under
+ * that lock: rf_input can queue a frame while another is half written.
+ *
+ * Read rf_next_time again after every call: a call can move it earlier.
+ *
+ * One rf_peer stands for one remote party and holds the ids that party sent. Every copy of an
+ * id must reach the same rf_peer, over all connections and all processes of that party: a copy
+ * that reaches another rf_peer runs again. An accepting side therefore finds the rf_peer of a
+ * new connection by its own means, for example the authenticated name of the caller.
  */
 
 typedef struct rf_peer rf_peer;
@@ -166,7 +177,11 @@ typedef struct {
     uint32_t handshake_ms;    /* longest wait for the other CLOCK */
     uint32_t keep_ms;         /* how long an id is kept after its deadline, >= handshake_ms */
     uint32_t max_requests;    /* open requests this side can have */
-    uint32_t max_ids;         /* request ids this side can keep as the replier */
+    /* Request ids this side can keep as the replier. An id stays until its deadline plus
+     * keep_ms, so new requests above max_ids / (deadline + keep_ms) per second are refused as
+     * busy: 4096 ids, 10 s deadlines and 60 s keep allow 58 per second. Calls take time in
+     * proportion to max_ids. */
+    uint32_t max_ids;
     uint32_t max_deadline_ms; /* a request with a deadline further away is refused */
 } rf_config;
 
@@ -177,8 +192,12 @@ typedef enum {
     RF_EV_REPLY,   /* a reply to a request: `id`, `number`, `flags`, `body` */
     RF_EV_OUTCOME, /* a request ended: `id`, `outcome`, `number` replies arrived */
     RF_EV_RESEND,  /* send this open request again: rf_request with `id`, `deadline`, repeat 1 */
-    RF_EV_REQUEST, /* run this: `id`, `key`, `body`, `deadline`, `flags`; answer with rf_end */
-    RF_EV_REPEAT,  /* `id` came again, marked: `number` replies sent, `ended`; see rf_reply_again */
+    /* Run this: `id`, `key`, `body`, `deadline`, `flags`. Every one needs rf_end or rf_refuse,
+     * also after the deadline or a failed handler: until then the id holds a slot. */
+    RF_EV_REQUEST,
+    /* `id` came again, marked, on a new connection: see rf_reply_again. `number` replies and
+     * `ended` say what was sent when the copy was read. Given once for each connection. */
+    RF_EV_REPEAT,
     RF_EV_FORGOT   /* `id` is forgotten: the stored replies can be freed */
 } rf_event_kind;
 
@@ -204,7 +223,7 @@ typedef struct {
     rf_bytes body;
 } rf_event;
 
-/* The default settings: 16 MiB, 1024 bytes, 5 s, 60 s, 64 requests, 512 ids and 1 hour. */
+/* The default settings: 16 MiB, 1024 bytes, 5 s, 60 s, 64 requests, 4096 ids and 1 hour. */
 void rf_config_default(rf_config *config);
 
 /* The bytes of memory a peer with `config` needs. 0 when a setting is out of range. */
@@ -269,8 +288,11 @@ rf_status rf_end(rf_peer *peer, rf_id id, uint8_t header[RF_HEADER_SIZE]);
  * RF_ERR_UNKNOWN_ID, RF_ERR_STATE after a reply or the end, RF_ERR_FLAGS, RF_WOULD_BLOCK. */
 rf_status rf_refuse(rf_peer *peer, rf_id id, uint8_t end_flag, uint8_t header[RF_HEADER_SIZE]);
 
-/* After RF_EV_REPEAT, to send stored replies again: all of them from number 0, in order, before
- * any new reply, then the end if it was sent. Or send nothing.
+/* After RF_EV_REPEAT, to send stored replies again, or send nothing. Keep each body when
+ * rf_reply is called. To replay: take the write lock; call rf_reply_again for number 0, 1, 2 and
+ * so on until it returns RF_ERR_STATE; then call rf_end_again, which returns RF_ERR_STATE when
+ * there is no end yet. Do not stop at the `number` of the event: a reply or the end can be sent
+ * between the event and the replay, and the requester drops it then.
  * RF_ERR_NOT_READY, RF_ERR_UNKNOWN_ID, RF_ERR_STATE for a number or an end that was never sent,
  * RF_WOULD_BLOCK, and a codec status. */
 rf_status rf_reply_again(rf_peer *peer, rf_id id, uint64_t number, size_t body_len,

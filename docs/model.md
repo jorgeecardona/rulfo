@@ -41,7 +41,7 @@ after the requester's deadline, and before or after the one of another connectio
 | `completed` means every reply arrived | the reply count in the end | a reply lost in a connection drop goes unseen |
 | No reply reaches the caller twice | the requester takes only the next reply number | a reply sent again is counted twice |
 | No reply reaches the caller after the outcome | late replies are dropped | a reply in flight at the deadline is delivered |
-| `unroutable` if and only if no replier is connected | the requester detects that there is no replier | the request waits and ends `expired` |
+| With no replier connected the outcome is `unroutable`, and never `expired` | the requester detects that there is no replier | the request waits and ends `expired` |
 
 The tests also show that these states can happen:
 
@@ -60,8 +60,8 @@ ran the request.
 ## The C core
 
 `tests/test_conformance.py` takes 12000 random runs of the model and makes the same calls on the C
-core. After every step the two agree on the outcome, the replies received, the handler starts and
-the replies after the outcome.
+core. After every step the two agree on the outcome, the replies received, the requests given to
+each handler and the replies after the outcome.
 
 It does not replay:
 

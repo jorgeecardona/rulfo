@@ -127,6 +127,7 @@ class Peer:
         config = _Config()
         library.rf_config_default(ctypes.byref(config))
         config.keep_ms = keep_ms
+        config.max_ids = 4  # a walk has one id, and thousands of walks make new peers
         size = library.rf_peer_size(ctypes.byref(config))
         self._memory = ctypes.create_string_buffer(size)
         self._peer = ctypes.c_void_p()

@@ -121,13 +121,18 @@ static void test_a_known_id_never_runs_again(void) {
     expect_request(&r, 1, 100, 0, 1);
     uint8_t h[RF_HEADER_SIZE];
     CHECK(rf_reply(r.b.peer, id_of(1), 0, 0, h) == RF_OK);
-    /* A marked copy reports what was sent. */
+    /* A second copy on the same connection asks for nothing (rule 12). */
+    expect_silence(&r, 1, 100, RF_REQUEST_REPEAT, 2);
+    /* A marked copy on a new connection reports what was sent, once. */
+    greet(&r, 2, 2);
     CHECK(copy(&r, 1, 100, RF_REQUEST_REPEAT, 2) == RF_OK);
     CHECK(r.event.kind == RF_EV_REPEAT && r.event.number == 1 && r.event.ended == 0);
     CHECK(r.event.id.bytes[15] == 1 && r.b.len == 0);
+    expect_silence(&r, 1, 100, RF_REQUEST_REPEAT, 2);
     /* An unmarked one is dropped. */
     expect_silence(&r, 1, 100, 0, 2);
     CHECK(rf_end(r.b.peer, id_of(1), h) == RF_OK);
+    greet(&r, 3, 3);
     CHECK(copy(&r, 1, 100, RF_REQUEST_REPEAT, 3) == RF_OK);
     CHECK(r.event.kind == RF_EV_REPEAT && r.event.number == 1 && r.event.ended != 0);
 
@@ -284,6 +289,7 @@ static int runs_twice(uint32_t limit, uint32_t keep, uint64_t spread) {
     rf_config_default(&config);
     config.handshake_ms = limit;
     config.keep_ms = keep;
+    config.max_ids = 2; /* a new peer for each case: keep it small */
     const uint64_t base = 100;
     const uint64_t deadline = base + 20;
     for (uint64_t off1 = 0; off1 <= spread; off1++) {
@@ -387,6 +393,74 @@ static void test_two_peers_over_a_reconnect(void) {
     close_end(&b);
 }
 
+/* The handler sends a reply and the end between RF_EV_REPEAT and the replay. */
+static void test_a_replay_that_follows_the_header_comment(void) {
+    rf_config config;
+    rf_config_default(&config);
+    end a, b;
+    open_end(&a, &config);
+    open_end(&b, &config);
+    join(&a, &b, 0, 0);
+    uint8_t scratch[QUEUE];
+    uint8_t h[RF_HEADER_SIZE];
+    rf_event event;
+    rf_id id = id_of(3);
+    rf_bytes key = {.ptr = (const uint8_t *)"op", .len = 2};
+    CHECK(rf_request(a.peer, id, key, 0, 100, 0, 0, h) == RF_OK);
+    send(&a, &b, h, "op", "");
+    CHECK(step(&b, 1, scratch, &event) == RF_OK && event.kind == RF_EV_REQUEST);
+    CHECK(rf_reply(b.peer, id, 0, 0, h) == RF_OK); /* lost with the connection */
+
+    join(&a, &b, 2, 2);
+    rf_poll(a.peer, 2, &event);
+    CHECK(event.kind == RF_EV_RESEND);
+    CHECK(rf_request(a.peer, id, key, 0, 100, 1, 2, h) == RF_OK);
+    send(&a, &b, h, "op", "");
+    CHECK(step(&b, 3, scratch, &event) == RF_OK && event.kind == RF_EV_REPEAT);
+    CHECK(event.number == 1 && event.ended == 0);
+
+    CHECK(rf_reply(b.peer, id, 0, 0, h) == RF_OK);
+    send(&b, &a, h, "", "");
+    CHECK(rf_end(b.peer, id, h) == RF_OK);
+    send(&b, &a, h, "", "");
+
+    uint64_t number = 0;
+    while (rf_reply_again(b.peer, id, number, 0, 0, h) == RF_OK) {
+        send(&b, &a, h, "", "");
+        number++;
+    }
+    CHECK(number == 2);
+    CHECK(rf_end_again(b.peer, id, h) == RF_OK);
+    send(&b, &a, h, "", "");
+
+    CHECK(step(&a, 4, scratch, &event) == RF_OK && event.kind == RF_EV_REPLY);
+    CHECK(step(&a, 4, scratch, &event) == RF_OK && event.kind == RF_EV_REPLY);
+    CHECK(step(&a, 4, scratch, &event) == RF_OK && event.kind == RF_EV_OUTCOME);
+    CHECK(event.outcome == RF_COMPLETED && event.number == 2);
+    close_end(&a);
+    close_end(&b);
+}
+
+/* The sustained rate that the comment of max_ids gives. */
+static void test_ids_fill_up_until_the_keep_time(void) {
+    rf_config config;
+    rf_config_default(&config);
+    config.max_ids = 2;
+    replier r;
+    start_with(&r, &config);
+    uint8_t h[RF_HEADER_SIZE];
+    for (uint8_t n = 1; n <= 2; n++) {
+        expect_request(&r, n, 100, 0, 1);
+        CHECK(rf_end(r.b.peer, id_of(n), h) == RF_OK);
+    }
+    CHECK(copy(&r, 3, 60200, 0, 60099) == RF_NEED_MORE);
+    expect_busy(&r, 3);
+    rf_poll(r.b.peer, 60100, &r.event);
+    CHECK(r.event.kind == RF_EV_FORGOT);
+    expect_request(&r, 3, 60200, 0, 60100);
+    close_end(&r.b);
+}
+
 int main(void) {
     test_replies_are_numbered_and_the_end_counts_them();
     test_a_known_id_never_runs_again();
@@ -398,6 +472,8 @@ int main(void) {
     test_forgotten_after_the_keep_time();
     test_the_keep_time_covers_two_senders();
     test_two_peers_over_a_reconnect();
+    test_a_replay_that_follows_the_header_comment();
+    test_ids_fill_up_until_the_keep_time();
     puts("replier: all tests passed");
     return 0;
 }
