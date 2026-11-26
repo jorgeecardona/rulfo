@@ -21,7 +21,7 @@ type Phase = Literal["idle", "running", "ended", "hung", "crashed"]
 type Redeliver = Literal["never", "to_dedup", "to_all"]
 type Forget = Literal["after_deadline", "when_not_running", "any_time"]
 type Repeat = Literal["after_reconnect", "any_time"]
-type Retry = Literal["never", "same_id", "new_id"]
+type Retry = Literal["never", "all_refused", "any_refused"]
 
 REPLY: Literal["reply"] = "reply"
 
@@ -47,10 +47,16 @@ class Rules:
     The defaults are the design. Every other value exists for a test that shows a property fail.
 
     - ``redeliver``: who gets the request again. ``to_dedup`` sends it only when ``dedup`` is on.
-    - ``repeat``: when a second copy can be sent. ``after_reconnect`` sends it only when the old
-      connection and every frame on it are gone. ``any_time`` also sends it while the first copy
+    - ``repeat``: when a second copy can be sent. ``after_reconnect`` sends it only after the
+      connection dropped. ``any_time`` also sends it on the same connection, while the first copy
       or its answer is still in flight.
-    - ``retry``: whether a requester that got ``busy`` sends the request again, and with which id.
+    - ``refuses_repeats``: whether a replier may refuse a copy marked as sent again.
+    - ``reads_old_connection``: whether the requester still reads the old connection after it sent
+      the request again on a new one.
+    - ``retry``: when a requester that got ``busy`` sends the request again: only when every
+      replier refused, or when any replier did.
+
+    A replier always looks up the id first: a copy with a known id is dropped, never refused.
     - ``forget``: when a replier may drop the id from its store. A store has a fixed size, so
       other requests push ids out. ``after_deadline`` is the only safe value.
     """
@@ -70,14 +76,18 @@ class Rules:
     redeliveries: int = 1
     repeat: Repeat = "after_reconnect"
     refusals: int = 1
-    retry: Retry = "same_id"
+    retry: Retry = "all_refused"
+    refuses_repeats: bool = False
+    reads_old_connection: bool = False
 
 
 @dataclass(frozen=True)
 class Replier:
-    """One replier and the frames in flight on its connection.
+    """One replier and the frames in flight on its connections.
 
-    ``runs`` counts handler starts. ``inbox`` counts copies of the request not yet received.
+    ``runs`` counts handler starts. ``inbox`` holds the copies of the request on the current
+    connection that the replier has not read. Each is ``True`` when it is marked as sent again.
+    ``old`` holds the unread copies of closed connections: a replier can still read them.
     ``outbox`` holds frames not yet received by the requester, in send order.
     """
 
@@ -85,7 +95,8 @@ class Replier:
     remembers: bool = False
     runs: int = 0
     sent: int = 0
-    inbox: int = 0
+    inbox: tuple[bool, ...] = ()
+    old: tuple[bool, ...] = ()
     outbox: tuple[Frame, ...] = ()
 
 
@@ -130,22 +141,23 @@ def _send(rules: Rules) -> Callable[[World], World]:
     def apply(s: World) -> World:
         if not s.repliers:
             return replace(s, sent=True, outcome="unroutable" if rules.detects_no_replier else None)
-        return replace(s, sent=True, repliers=tuple(replace(r, inbox=1) for r in s.repliers))
+        return replace(s, sent=True, repliers=tuple(replace(r, inbox=(False,)) for r in s.repliers))
 
     return apply
 
 
 def _redeliver(s: World) -> World:
     repliers = tuple(
-        r if st.ended else replace(r, inbox=r.inbox + 1)
+        r if st.ended else replace(r, inbox=(*r.inbox, True))
         for r, st in zip(s.repliers, s.streams, strict=True)
     )
     return replace(s, repliers=repliers, redeliveries=s.redeliveries + 1)
 
 
-def _receive(rules: Rules, i: int) -> Callable[[World], World]:
+def _receive(rules: Rules, i: int, *, old: bool = False) -> Callable[[World], World]:
     def apply(s: World) -> World:
-        r = replace(s.repliers[i], inbox=s.repliers[i].inbox - 1)
+        r = s.repliers[i]
+        r = replace(r, old=r.old[1:]) if old else replace(r, inbox=r.inbox[1:])
         repeated = rules.dedup and r.remembers
         if s.past_deadline or repeated:
             return _with_replier(s, i, r)
@@ -157,7 +169,7 @@ def _receive(rules: Rules, i: int) -> Callable[[World], World]:
 def _refuse(i: int) -> Callable[[World], World]:
     def apply(s: World) -> World:
         r = s.repliers[i]
-        refused = replace(r, inbox=r.inbox - 1, outbox=(*r.outbox, End(0, busy=True)))
+        refused = replace(r, inbox=r.inbox[1:], outbox=(*r.outbox, End(0, busy=True)))
         return replace(_with_replier(s, i, refused), refusals=s.refusals + 1)
 
     return apply
@@ -177,7 +189,12 @@ def _disconnect(rules: Rules, i: int) -> Callable[[World], World]:
             and not s.streams[i].ended
             and s.redeliveries < rules.redeliveries
         )
-        r = replace(r, inbox=1 if again else 0, outbox=())
+        r = replace(
+            r,
+            old=(*r.old, *r.inbox),
+            inbox=(True,) if again else (),
+            outbox=r.outbox if rules.reads_old_connection else (),
+        )
         return replace(
             _with_replier(s, i, r),
             disconnects=s.disconnects + 1,
@@ -187,26 +204,21 @@ def _disconnect(rules: Rules, i: int) -> Callable[[World], World]:
     return apply
 
 
-def _retry(rules: Rules) -> Callable[[World], World]:
+def _retry(s: World) -> World:
     """The requester sends a refused request again, with the time that is left."""
+    return replace(
+        s,
+        outcome=None,
+        retries=s.retries + 1,
+        repliers=tuple(replace(r, inbox=(*r.inbox, False)) for r in s.repliers),
+        streams=(Stream(),) * len(s.streams),
+    )
 
-    def again(r: Replier) -> Replier:
-        r = replace(r, inbox=r.inbox + 1)
-        if rules.retry == "new_id" and r.phase == "ended":
-            # A replier does not know a new id, so what it remembers does not stop the handler.
-            return replace(r, phase="idle", remembers=False, sent=0)
-        return r
 
-    def apply(s: World) -> World:
-        return replace(
-            s,
-            outcome=None,
-            retries=s.retries + 1,
-            repliers=tuple(again(r) for r in s.repliers),
-            streams=(Stream(),) * len(s.streams),
-        )
-
-    return apply
+def _may_retry(rules: Rules, s: World) -> bool:
+    if s.outcome != "busy" or s.past_deadline or s.retries >= 1:
+        return False
+    return rules.retry == "any_refused" or all(st.refused for st in s.streams)
 
 
 def _reply(i: int) -> Callable[[World], World]:
@@ -264,16 +276,22 @@ def _replier_actions(rules: Rules, i: int) -> list[Action[World]]:
     actions: list[Action[World]] = [
         Action(
             f"R{i}_receive",
-            lambda s: at(s).inbox > 0 and at(s).phase not in ("hung", "crashed"),
+            lambda s: bool(at(s).inbox) and at(s).phase not in ("hung", "crashed"),
             _receive(rules, i),
             fair="weak",
+        ),
+        Action(
+            f"R{i}_receive_old",
+            lambda s: bool(at(s).old) and at(s).phase not in ("hung", "crashed"),
+            _receive(rules, i, old=True),
         ),
         # The store of ids is full, or the deadline is longer than the replier accepts.
         Action(
             f"R{i}_refuse",
             lambda s: (
                 s.refusals < rules.refusals
-                and at(s).inbox > 0
+                and bool(at(s).inbox)
+                and (rules.refuses_repeats or not at(s).inbox[0])
                 and at(s).phase not in ("hung", "crashed")
                 and not s.past_deadline
                 and not (rules.dedup and at(s).remembers)
@@ -305,7 +323,7 @@ def _replier_actions(rules: Rules, i: int) -> list[Action[World]]:
             lambda s: (
                 s.disconnects < rules.disconnects
                 and s.sent
-                and (s.outcome is None or at(s).inbox > 0 or bool(at(s).outbox))
+                and (s.outcome is None or bool(at(s).inbox) or bool(at(s).outbox))
             ),
             _disconnect(rules, i),
         ),
@@ -365,13 +383,7 @@ def request_model(rules: Rules | None = None) -> Model[World]:
             )
         )
     if rules.retry != "never":
-        actions.append(
-            Action(
-                "retry",
-                lambda s: s.outcome == "busy" and not s.past_deadline and s.retries < 1,
-                _retry(rules),
-            )
-        )
+        actions.append(Action("retry", lambda s: _may_retry(rules, s), _retry))
     if rules.deadline:
         actions.append(
             Action(
@@ -406,11 +418,12 @@ def check_safety(rules: Rules | None = None) -> Result[World]:
 
 
 def check_ends(rules: Rules | None = None) -> LivenessResult[World]:
-    """Check that every run gives the requester an outcome."""
+    """Check that every sent request gets an outcome, the first time and after a retry."""
     return check_liveness(
         request_model(rules),
         goal=lambda s: s.outcome is not None,
         goal_name="the request has an outcome",
+        leadsto_from=lambda s: s.sent and s.outcome is None,
     )
 
 

@@ -38,7 +38,8 @@ typedef enum {
     RF_ERR_KEY_LENGTH, /* the key length is above `length` or above 65535 */
     RF_ERR_KIND,       /* unknown kind */
     RF_ERR_FLAGS,      /* unknown flag, or flags that exclude each other */
-    RF_ERR_KEY,        /* a key on a kind without a key, or a key that is not UTF-8 */
+    RF_ERR_KEY,        /* a key that is not UTF-8, or is on a kind without one, or is missing */
+    RF_ERR_BODY,       /* a body on END */
     RF_ERR_ARGUMENT    /* END with a flag and a reply count other than 0 */
 } rf_status;
 
@@ -78,11 +79,13 @@ rf_status rf_preface_decode(const uint8_t *in, size_t len, uint16_t *capabilitie
 
 /* Reads one frame from the start of `in`. `max_length` is the largest key plus body accepted.
  *
- * RF_OK: `frame` is set, its key and body point into `in`, and `size` is the bytes it used.
+ * RF_OK: `frame` is set, its key and body point into `in`, and `size` is the bytes it used. The
+ * key and the body are valid while the caller does not change `in`.
  * RF_NEED_MORE: `size` is the number of bytes needed, as far as the input tells: the header
  * size, then the size of the whole frame. `frame` is not changed.
- * Any other status is a protocol error: close the connection. A `length` above `max_length` is
- * refused after 4 bytes, and a bad header after RF_HEADER_SIZE bytes, before its body. */
+ * Any other status is a protocol error: close the connection. `frame` and `size` are not changed.
+ * A `length` above `max_length` is refused after 4 bytes, a bad header after RF_HEADER_SIZE
+ * bytes, and a bad key as soon as the whole key arrived: none of them waits for the body. */
 rf_status rf_frame_decode(const uint8_t *in, size_t len, uint32_t max_length, rf_frame *frame,
                           size_t *size);
 

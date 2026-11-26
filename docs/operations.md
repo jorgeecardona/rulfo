@@ -13,7 +13,7 @@ many replies, then an end. The requester always gets exactly one outcome.
 | `completed` | Every replier sent its end, no replier refused, and every reply that was sent arrived. The number of replies can be zero. |
 | `busy` | Every replier sent its end, and at least one refused the request. A replier that refused did not run it. |
 | `expired` | The deadline passed first. The request may have run. Replies that arrived before the deadline were delivered. |
-| `unroutable` | No replier handles the key. Nothing ran. The requester learns this at once, not at the deadline. |
+| `unroutable` | No replier handles the key. Nothing ran. The requester learns this at once, unless the connection drops first: then the outcome can be `expired`. |
 
 With one replier, `busy` means that nothing ran. With more than one, another replier may have run
 the request.
@@ -28,19 +28,26 @@ Rules:
 5. An end carries the number of replies the replier sent. The requester accepts the end only when
    it received that many. Otherwise the outcome is `expired` at the deadline.
 6. After a reconnect, the requester sends an open request again, with the same id and the time
-   that is left. It does this only for a replier that drops repeated ids.
+   that is left, marked as sent again. It does this only for a replier that drops repeated ids.
 7. A replier keeps an id until the deadline of its request has passed. It never forgets an id
    earlier, never while the handler runs, and never to make room for another id.
 8. A replier drops a request whose deadline has passed.
-9. A replier refuses a request that it cannot accept: its store of ids is full, or the deadline is
-   longer than the replier accepts (a setting). It sends an end marked busy and does not run the
-   handler. A replier that does not drop repeated ids has no store, so only the deadline applies.
-10. A requester sends a request at most once on one connection. A peer discards the bytes it has
-    not read when a connection closes. Without this rule, `busy` could arrive while a second copy
-    of the request runs.
-11. A requester may send a refused request again, with the same id and the time that is left. With
-    more than one replier it does this only if every replier drops repeated ids. A replier that
-    already ran the request drops the repeat and sends nothing, so this retry can end `expired`.
+9. A replier looks up the id first. It drops a copy with a known id and answers nothing.
+10. A replier refuses a new request that it cannot accept: its store of ids is full, or the
+    deadline is longer than the replier accepts (a setting). It sends an end marked busy and does
+    not run the handler. A replier that does not drop repeated ids has no store, so only the
+    deadline applies.
+11. A replier runs or drops a copy marked as sent again. It never answers it with busy or with
+    "no handler", because an older copy on the closed connection can still be read and run.
+12. One connection has at most one copy of a request that has no end. The requester sends a new
+    copy after a busy end, or on a new connection. After it sends on a new connection, it reads
+    nothing from the old one.
+13. A requester may send a refused request again, with the same id and the time that is left, when
+    every replier refused it. When only some refused, a retry cannot complete: a replier that
+    already ran the request drops the repeat and sends no end.
+
+Known limit of rules 2 and 7: a replier counts the time left from the moment it reads a copy. A
+copy that waits in a buffer can arrive after the replier forgot the id, and run again. Not solved.
 
 What a replier that crashed looks like to the requester: no end arrives, and the outcome is
 `expired`.

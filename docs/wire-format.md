@@ -52,14 +52,14 @@ A frame is a 32-byte header, then the key, then the body.
 | 8 | 16 | id | the request id |
 | 24 | 8 | argument | per kind |
 
-The key is UTF-8. The body is opaque bytes. The largest `length` a peer accepts is a setting,
-16 MiB by default. A longer frame is a protocol error.
+The key is UTF-8. The body is opaque bytes. END has no body. The largest `length` a peer accepts
+is a setting, 16 MiB by default. A longer frame is a protocol error.
 
 ## Kinds
 
 | Kind | Name | Sender | Key | Argument | Flags |
 |---|---|---|---|---|---|
-| `0x01` | REQUEST | requester | yes | milliseconds until the deadline | bit 0: sent again after a reconnect |
+| `0x01` | REQUEST | requester | 1 byte or more | milliseconds until the deadline | bit 0: sent again, an earlier copy of this id has no end |
 | `0x02` | REPLY | replier | no | number of this reply, from 0 | bit 0: the body is an error |
 | `0x03` | END | replier | no | number of replies sent | bit 0: no handler for the key. bit 1: busy, the request was refused |
 
@@ -74,10 +74,12 @@ value is unassigned.
     - `length` above the largest accepted
     - key length above `length`, or a key that is not valid UTF-8
     - unknown kind, or non-zero unused flag
-    - a key on a kind that has no key
+    - a key on a kind that has no key, or a REQUEST with an empty key
+    - END with a body
     - END with both flags
     - END with a flag and an argument other than `0`
 - REPLY or END for an id with no open request: dropped. Not an error.
+- A replier sends END with a flag only for a REQUEST without bit 0.
 - END with bit 0 from every peer: the outcome is `unroutable`.
 - END from every peer, at least one with bit 1: the outcome is `busy`.
 

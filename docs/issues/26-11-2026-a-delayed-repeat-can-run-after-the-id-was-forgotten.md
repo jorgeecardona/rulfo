@@ -1,0 +1,18 @@
+---
+title: "A delayed repeat can run after the id was forgotten"
+status: open
+area: core
+filed: 2026-11-26
+scope: M
+verify: test
+---
+
+Source: Fable review of commits `2a73d8c` to `b036d0c`.
+
+A replier counts the time left from the moment it reads a copy of a request. A copy that waits in
+a buffer can arrive after the replier forgot the id. The replier then runs the request again.
+
+The model does not show this: it has one deadline that both sides see at the same instant.
+
+Decide before the connection state machine: a longer time to keep an id, or a different rule. The
+model needs two clocks to check the choice.

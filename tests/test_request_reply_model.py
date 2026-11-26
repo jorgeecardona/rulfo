@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 import pytest
 from musil import assert_ok, assert_violates, explore, witness
@@ -22,8 +23,10 @@ def _reachable(rules: Rules, predicate: Callable[[World], bool]) -> bool:
         Rules(),
         Rules(repliers=0),
         Rules(repliers=2, max_replies=1),
+        Rules(refusals=2),
+        Rules(repliers=2, max_replies=1, refusals=3),
     ],
-    ids=["one-replier", "no-replier", "two-repliers"],
+    ids=["one-replier", "no-replier", "two-repliers", "two-refusals", "two-repliers-refusing"],
 )
 def test_the_design_keeps_every_invariant_and_always_ends(rules: Rules) -> None:
     assert_ok(check_safety(rules))
@@ -153,37 +156,64 @@ def test_a_second_copy_on_the_same_connection_makes_busy_wrong() -> None:
     )
 
 
+def test_refusing_a_repeat_makes_busy_wrong_when_the_old_copy_is_read_late() -> None:
+    assert_violates(
+        check_safety(Rules(refuses_repeats=True)),
+        invariant="refused-did-not-run",
+        via=["R0_disconnect", "R0_refuse", "R0_receive_old"],
+    )
+
+
+def test_reading_the_old_connection_makes_busy_wrong() -> None:
+    assert_violates(
+        check_safety(Rules(reads_old_connection=True)),
+        invariant="refused-did-not-run",
+        via=["R0_refuse", "R0_disconnect"],
+    )
+
+
 def test_a_second_copy_at_any_time_still_runs_at_most_once() -> None:
-    result = check_safety(Rules(repeat="any_time", refusals=0))
-    assert_ok(result)
+    assert_ok(check_safety(Rules(repeat="any_time", refusals=0)))
 
 
 def test_a_retry_after_busy_can_complete() -> None:
     assert _reachable(Rules(), lambda s: s.retries == 1 and s.outcome == "completed")
 
 
-def test_a_retry_with_a_new_id_is_safe_with_one_replier() -> None:
-    assert_ok(check_safety(Rules(retry="new_id")))
+def test_a_second_busy_after_a_retry_can_happen_and_still_means_nothing_ran() -> None:
+    rules = Rules(refusals=2)
+    assert _reachable(rules, lambda s: s.retries == 1 and s.outcome == "busy")
+    assert not _reachable(rules, lambda s: s.outcome == "busy" and s.repliers[0].runs > 0)
 
 
-def test_a_retry_with_a_new_id_runs_twice_with_two_repliers() -> None:
-    assert_violates(
-        check_safety(Rules(repliers=2, max_replies=1, retry="new_id")),
-        invariant="runs-at-most-once",
-        via=["retry"],
-    )
-
-
-def test_a_retry_to_two_repliers_without_dedup_runs_twice() -> None:
-    assert_violates(
-        check_safety(Rules(repliers=2, max_replies=1, dedup=False)),
-        invariant="runs-at-most-once",
-        via=["retry"],
-    )
-
-
-def test_a_retry_to_two_repliers_can_expire_with_one_that_already_ran_it() -> None:
+def test_two_repliers_that_both_refused_can_complete_after_a_retry() -> None:
     assert _reachable(
-        Rules(repliers=2, max_replies=1, may_hang=False, crashes=0, disconnects=0),
-        lambda s: s.retries == 1 and s.outcome == "expired" and s.repliers[1].runs == 1,
+        Rules(repliers=2, max_replies=1, refusals=2),
+        lambda s: s.retries == 1 and s.outcome == "completed",
     )
+
+
+TWO_NO_FAULTS = Rules(
+    repliers=2, max_replies=1, may_hang=False, crashes=0, disconnects=0, retry="any_refused"
+)
+
+
+def test_a_retry_when_one_replier_ran_can_never_complete() -> None:
+    assert not _reachable(TWO_NO_FAULTS, lambda s: s.retries == 1 and s.outcome == "completed")
+
+
+def test_without_a_deadline_such_a_retry_stays_open() -> None:
+    assert not check_ends(replace(TWO_NO_FAULTS, deadline=False)).ok
+    assert_ok(check_ends(replace(TWO_NO_FAULTS, deadline=False, retry="all_refused")))
+
+
+def test_such_a_retry_without_dedup_runs_twice() -> None:
+    assert_violates(
+        check_safety(replace(TWO_NO_FAULTS, dedup=False)),
+        invariant="runs-at-most-once",
+        via=["retry"],
+    )
+
+
+def test_a_retry_when_every_replier_refused_needs_no_dedup() -> None:
+    assert_ok(check_safety(Rules(repliers=2, max_replies=1, dedup=False, refusals=2)))

@@ -140,7 +140,7 @@ static void test_header_rules(void) {
         rf_status status;
     } cases[] = {
         {RF_REQUEST, 0, 1, 9, RF_OK},
-        {RF_REQUEST, 0, 0, 0, RF_OK},
+        {RF_REQUEST, 0, 0, 0, RF_ERR_KEY},
         {RF_REQUEST, RF_REQUEST_REPEAT, 1, 9, RF_OK},
         {RF_REQUEST, 0x02, 1, 9, RF_ERR_FLAGS},
         {RF_REPLY, 0, 0, 9, RF_OK},
@@ -177,6 +177,39 @@ static void test_bad_header_is_refused_before_the_body(void) {
     rf_frame frame;
     size_t size = 0;
     CHECK(rf_frame_decode(in, sizeof in, MAX, &frame, &size) == RF_ERR_KIND);
+}
+
+static void test_end_has_no_body(void) {
+    const uint8_t flags[] = {0, RF_END_NO_HANDLER, RF_END_BUSY};
+    for (size_t i = 0; i < sizeof flags; i++) {
+        rf_frame frame = {.kind = RF_END,
+                          .flags = flags[i],
+                          .body = {.ptr = (const uint8_t *)"x", .len = 1}};
+        uint8_t out[64];
+        size_t size = 0;
+        CHECK(rf_frame_encode(&frame, MAX, out, sizeof out, &size) == RF_ERR_BODY);
+
+        uint8_t in[RF_HEADER_SIZE] = {0};
+        in[0] = 1;
+        in[4] = RF_END;
+        in[5] = flags[i];
+        CHECK(rf_frame_decode(in, sizeof in, MAX, &frame, &size) == RF_ERR_BODY);
+    }
+}
+
+static void test_bad_key_is_refused_before_the_body(void) {
+    uint8_t in[RF_HEADER_SIZE + 2] = {0};
+    in[0] = 200;
+    in[4] = RF_REQUEST;
+    in[6] = 2;
+    in[RF_HEADER_SIZE] = 0xFF;
+    in[RF_HEADER_SIZE + 1] = 0xFF;
+    rf_frame frame = {.kind = 99};
+    size_t size = 7;
+    CHECK(rf_frame_decode(in, sizeof in - 1, MAX, &frame, &size) == RF_NEED_MORE);
+    size = 7;
+    CHECK(rf_frame_decode(in, sizeof in, MAX, &frame, &size) == RF_ERR_KEY);
+    CHECK(size == 7 && frame.kind == 99);
 }
 
 static void test_longest_length(void) {
@@ -306,6 +339,8 @@ int main(void) {
     test_two_frames_in_one_buffer();
     test_header_rules();
     test_bad_header_is_refused_before_the_body();
+    test_end_has_no_body();
+    test_bad_key_is_refused_before_the_body();
     test_longest_length();
     test_longest_key();
     test_small_output_buffer();
