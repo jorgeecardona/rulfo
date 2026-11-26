@@ -25,5 +25,9 @@ rulfo: Messaging between processes where a request gets zero, one or many replie
 
 ## Gotchas
 
+- `models/` holds the musil models. They are the specification: change the model and
+  `docs/operations.md` before the code. Each property needs a test where it fails.
+- No C code yet. The Python package `rulfo` is empty until the binding exists.
+
 - Version lives as `__version__` in `src/rulfo/__init__.py`; `pyproject.toml` reads it via `[tool.hatch.version]` (`version` is `dynamic`). The pre-commit hook auto-bumps it when `src/` changes. Do not edit versions by hand elsewhere.
 - Record follow-ups in `docs/issues/`, not as scattered TODO comments.

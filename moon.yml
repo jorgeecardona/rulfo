@@ -12,27 +12,27 @@ language: 'python'
 
 tasks:
   lint:
-    command: 'uv run ruff check src tests'
-    inputs: ['src/**/*.py', 'tests/**/*.py', 'pyproject.toml']
+    command: 'uv run ruff check src models tests'
+    inputs: ['src/**/*.py', 'models/**/*.py', 'tests/**/*.py', 'pyproject.toml']
 
   format-check:
-    command: 'uv run ruff format --check src tests'
-    inputs: ['src/**/*.py', 'tests/**/*.py', 'pyproject.toml']
+    command: 'uv run ruff format --check src models tests'
+    inputs: ['src/**/*.py', 'models/**/*.py', 'tests/**/*.py', 'pyproject.toml']
 
   typecheck:
     command: 'uv run pyright'
-    inputs: ['src/**/*.py', 'tests/**/*.py', 'pyproject.toml']
+    inputs: ['src/**/*.py', 'models/**/*.py', 'tests/**/*.py', 'pyproject.toml']
 
   test:
     command: 'uv run pytest -q'
-    inputs: ['src/**/*.py', 'tests/**/*.py', 'pyproject.toml']
+    inputs: ['src/**/*.py', 'models/**/*.py', 'tests/**/*.py', 'pyproject.toml']
 
   # Run the suite against the lowest supported Python in a throwaway isolated env (not .venv),
   # so a feature that quietly needs a newer interpreter is caught at the floor rather than by a
   # user on 3.12. --with-editable . installs this package; pytest is pulled in too.
   test-floor:
-    command: 'uv run --isolated --python 3.12 --with-editable . --with pytest pytest -q'
-    inputs: ['src/**/*.py', 'tests/**/*.py', 'pyproject.toml']
+    command: 'uv run --isolated --python 3.12 --with-editable . --with pytest --with musil pytest -q'
+    inputs: ['src/**/*.py', 'models/**/*.py', 'tests/**/*.py', 'pyproject.toml']
 
   build:
     command: 'uv build --out-dir dist'

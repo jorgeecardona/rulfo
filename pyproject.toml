@@ -48,7 +48,7 @@ path = "src/rulfo/__init__.py"
 packages = ["src/rulfo"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+include = ["src", "models", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [tool.uv]
 # The version is dynamic (hatchling reads __version__ from the file below), so uv must watch it too:
@@ -67,12 +67,13 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["models"]
 addopts = "-q"
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-src = ["src", "tests"]
+src = ["src", "models", "tests"]
 
 [tool.ruff.lint]
 select = ["ALL"]
@@ -103,13 +104,15 @@ convention = "pep257"
 # Tests may assert (S101), use magic values (PLR2004), take unused fixtures (ARG), pass Any to typed
 # calls (ANN401), and group assertions pytest would otherwise split (PT018).
 "tests/**/*.py" = ["S101", "PLR2004", "ARG", "ANN401", "PT018"]
+# A model prints its verdicts when run as a script (T201).
+"models/**/*.py" = ["T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["rulfo"]
 
 [tool.pyright]
-include = ["src", "tests"]
-extraPaths = ["src"]
+include = ["src", "models", "tests"]
+extraPaths = ["src", "models"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 venvPath = "."

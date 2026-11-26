@@ -74,5 +74,6 @@ nav:
   - Home: index.md
   - Operations: operations.md
   - Wire format: wire-format.md
+  - Model: model.md
   - API reference: api.md
   - Changelog: changelog.md

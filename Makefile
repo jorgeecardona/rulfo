@@ -21,8 +21,8 @@ install-hooks: ## point git at the tracked .githooks/ (pre-commit + pre-push)
 	@echo "hooks installed: core.hooksPath -> .githooks"
 
 format: ## auto-format + autofix lint (ruff)
-	uv run ruff format src tests
-	uv run ruff check --fix src tests
+	uv run ruff format src models tests
+	uv run ruff check --fix src models tests
 
 lint: ## lint (ruff) -- the CI :lint task
 	moon run :lint
