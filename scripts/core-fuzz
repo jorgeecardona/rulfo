@@ -1,10 +1,13 @@
 #!/bin/sh
-# Fuzz the C frame codec with libFuzzer. Needs clang.
+# Fuzz the C frame codec and the peer with libFuzzer. Needs clang.
 #
-# Usage: scripts/core-fuzz [seconds]   (default 60)
+# Usage: scripts/core-fuzz [seconds for each target]   (default 60)
 set -e
 cd "$(dirname "$0")/.."
 cmake -S core -B build/fuzz -DCMAKE_C_COMPILER=clang -DRULFO_FUZZ=ON >/dev/null
 cmake --build build/fuzz --parallel 2
-mkdir -p build/corpus
-build/fuzz/fuzz_frame -max_total_time="${1:-60}" -max_len=4096 -print_final_stats=1 build/corpus
+for target in frame peer; do
+    mkdir -p "build/corpus/$target"
+    "build/fuzz/fuzz_$target" -max_total_time="${1:-60}" -max_len=4096 -print_final_stats=1 \
+        "build/corpus/$target"
+done

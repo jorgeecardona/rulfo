@@ -39,7 +39,7 @@ test: ## run the test suite -- the CI :test task
 core-test: ## build and test the C core with sanitizers -- the CI :core-test task
 	moon run :core-test
 
-fuzz: ## fuzz the C frame codec with libFuzzer (clang) -- SECONDS=60
+fuzz: ## fuzz the C core with libFuzzer (clang) -- SECONDS=60 per target
 	./scripts/core-fuzz $(or $(SECONDS),60)
 
 check: lint format-check typecheck test core-test ## the CI test stage: lint + format + typecheck + tests

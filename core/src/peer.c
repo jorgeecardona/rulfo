@@ -24,9 +24,21 @@ typedef struct {
     bool marked; /* the last copy was marked as sent again */
 } request;
 
+/* A request this side took as the replier and still remembers. */
+typedef struct {
+    rf_id id;
+    uint64_t deadline;   /* of the copy that was taken, on our clock */
+    uint64_t replies;    /* sent so far, and the number of the next one */
+    uint64_t brought_on; /* the connection that brought that copy */
+    bool used;
+    bool ended;
+    bool marked; /* that copy was marked as sent again */
+} taken;
+
 struct rf_peer {
     rf_config config;
     request *requests; /* config.max_requests slots */
+    taken *ids;        /* config.max_ids slots */
     uint64_t connection; /* counts calls of rf_connected, the first is 1 */
 
     /* The current connection. Everything here is reset by rf_connected. */
@@ -50,7 +62,9 @@ void rf_config_default(rf_config *config) {
                           .max_out = 1024,
                           .handshake_ms = 5000,
                           .keep_ms = 60000,
-                          .max_requests = 64};
+                          .max_requests = 64,
+                          .max_ids = 512,
+                          .max_deadline_ms = 3600000};
 }
 
 size_t rf_peer_size(const rf_config *config) {
@@ -61,6 +75,7 @@ size_t rf_peer_size(const rf_config *config) {
     }
     uint64_t size = sizeof(struct rf_peer);
     size += (uint64_t)config->max_requests * sizeof(request);
+    size += (uint64_t)config->max_ids * sizeof(taken);
     size += config->max_out;
 #if SIZE_MAX <= UINT32_MAX
     if (size > SIZE_MAX) {
@@ -85,7 +100,11 @@ rf_status rf_peer_init(void *memory, size_t len, const rf_config *config, rf_pee
     for (uint32_t i = 0; i < config->max_requests; i++) {
         made->requests[i] = (request){.used = false};
     }
-    made->out = (uint8_t *)(made->requests + config->max_requests);
+    made->ids = (taken *)(void *)(made->requests + config->max_requests);
+    for (uint32_t i = 0; i < config->max_ids; i++) {
+        made->ids[i] = (taken){.used = false};
+    }
+    made->out = (uint8_t *)(made->ids + config->max_ids);
     *peer = made;
     return RF_OK;
 }
@@ -269,6 +288,204 @@ static rf_status read_end(rf_peer *peer, const rf_header *header, uint64_t now, 
     return RF_OK;
 }
 
+static taken *find_taken(rf_peer *peer, const rf_id *id) {
+    for (uint32_t i = 0; i < peer->config.max_ids; i++) {
+        taken *t = &peer->ids[i];
+        if (t->used && memcmp(t->id.bytes, id->bytes, sizeof id->bytes) == 0) {
+            return t;
+        }
+    }
+    return NULL;
+}
+
+static taken *free_taken(rf_peer *peer) {
+    for (uint32_t i = 0; i < peer->config.max_ids; i++) {
+        if (!peer->ids[i].used) {
+            return &peer->ids[i];
+        }
+    }
+    return NULL;
+}
+
+/* The deadline of a request on our clock (docs/wire-format.md, clocks and deadlines). */
+static uint64_t local_deadline(const rf_peer *peer, uint64_t theirs) {
+    if (theirs >= peer->their_clock) {
+        return add(peer->read_at, theirs - peer->their_clock);
+    }
+    return since(peer->read_at, peer->their_clock - theirs);
+}
+
+static rf_status read_request(rf_peer *peer, const rf_header *header, const uint8_t *in,
+                              size_t len, uint64_t now, size_t *used, rf_event *event) {
+    if (len - RF_HEADER_SIZE < header->key_len) {
+        return RF_NEED_MORE;
+    }
+    rf_bytes key = {.ptr = in + RF_HEADER_SIZE, .len = header->key_len};
+    if (rf_key_check(key) != RF_OK) {
+        return close_link(peer, RF_ERR_KEY, event);
+    }
+    uint64_t deadline = local_deadline(peer, header->argument);
+    if (now >= deadline) {
+        return drop(peer, header, len, used);
+    }
+    bool marked = (header->flags & RF_REQUEST_REPEAT) != 0;
+    const taken *known = find_taken(peer, &header->id);
+    if (known != NULL) {
+        /* A known id never runs again (rule 9). */
+        if (marked) {
+            event->kind = RF_EV_REPEAT;
+            event->id = known->id;
+            event->number = known->replies;
+            event->ended = known->ended;
+        }
+        return drop(peer, header, len, used);
+    }
+    taken *slot = free_taken(peer);
+    if (slot == NULL || deadline - now > peer->config.max_deadline_ms) {
+        /* A copy marked as sent again is never refused (rule 11). */
+        rf_header busy = {.kind = RF_END, .flags = RF_END_BUSY, .id = header->id};
+        if (!marked && !queue(peer, &busy)) {
+            return RF_WOULD_BLOCK;
+        }
+        return drop(peer, header, len, used);
+    }
+    size_t total = (size_t)RF_HEADER_SIZE + header->key_len + header->body_len;
+    if (len < total) {
+        return RF_NEED_MORE;
+    }
+    *slot = (taken){.id = header->id,
+                    .deadline = deadline,
+                    .brought_on = peer->connection,
+                    .used = true,
+                    .marked = marked};
+    event->kind = RF_EV_REQUEST;
+    event->id = header->id;
+    event->flags = header->flags;
+    event->deadline = deadline;
+    event->key = key;
+    event->body = (rf_bytes){.ptr = key.ptr + key.len, .len = header->body_len};
+    *used = total;
+    return RF_OK;
+}
+
+/* Writes the header of a frame of the replier side. */
+static rf_status answer_header(const rf_peer *peer, uint8_t kind, uint8_t flags, rf_id id,
+                               uint64_t argument, size_t body_len,
+                               uint8_t header[RF_HEADER_SIZE]) {
+    rf_header frame = {.kind = kind,
+                       .flags = flags,
+                       .id = id,
+                       .argument = argument,
+                       .body_len = body_len};
+    return rf_header_encode(&frame, peer->config.max_length, header);
+}
+
+/* Whether a header of the caller would come before bytes of the core on the wire. */
+static bool core_bytes_wait(const rf_peer *peer) {
+    return peer->link == LINK_READY && peer->out_len > 0;
+}
+
+rf_status rf_reply(rf_peer *peer, rf_id id, size_t body_len, uint8_t flags,
+                   uint8_t header[RF_HEADER_SIZE]) {
+    taken *t = find_taken(peer, &id);
+    if (t == NULL) {
+        return RF_ERR_UNKNOWN_ID;
+    }
+    if (t->ended) {
+        return RF_ERR_STATE;
+    }
+    if (core_bytes_wait(peer)) {
+        return RF_WOULD_BLOCK;
+    }
+    rf_status status = answer_header(peer, RF_REPLY, flags, id, t->replies, body_len, header);
+    if (status != RF_OK) {
+        return status;
+    }
+    t->replies++;
+    return peer->link == LINK_READY ? RF_OK : RF_OFFLINE;
+}
+
+rf_status rf_end(rf_peer *peer, rf_id id, uint8_t header[RF_HEADER_SIZE]) {
+    taken *t = find_taken(peer, &id);
+    if (t == NULL) {
+        return RF_ERR_UNKNOWN_ID;
+    }
+    if (t->ended) {
+        return RF_ERR_STATE;
+    }
+    if (core_bytes_wait(peer)) {
+        return RF_WOULD_BLOCK;
+    }
+    rf_status status = answer_header(peer, RF_END, 0, id, t->replies, 0, header);
+    if (status != RF_OK) {
+        return status;
+    }
+    t->ended = true;
+    return peer->link == LINK_READY ? RF_OK : RF_OFFLINE;
+}
+
+rf_status rf_refuse(rf_peer *peer, rf_id id, uint8_t end_flag, uint8_t header[RF_HEADER_SIZE]) {
+    if (end_flag != RF_END_BUSY && end_flag != RF_END_NO_HANDLER) {
+        return RF_ERR_FLAGS;
+    }
+    taken *t = find_taken(peer, &id);
+    if (t == NULL) {
+        return RF_ERR_UNKNOWN_ID;
+    }
+    if (t->ended || t->replies > 0) {
+        return RF_ERR_STATE;
+    }
+    if (t->marked || t->brought_on != peer->connection || peer->link != LINK_READY) {
+        t->used = false;
+        return RF_DROPPED;
+    }
+    if (peer->out_len > 0) {
+        return RF_WOULD_BLOCK;
+    }
+    rf_status status = answer_header(peer, RF_END, end_flag, id, 0, 0, header);
+    if (status == RF_OK) {
+        t->used = false;
+    }
+    return status;
+}
+
+/* Finds the taken request that stored frames can be sent again for. */
+static rf_status again(rf_peer *peer, const rf_id *id, const taken **found) {
+    if (peer->link != LINK_READY) {
+        return RF_ERR_NOT_READY;
+    }
+    *found = find_taken(peer, id);
+    if (*found == NULL) {
+        return RF_ERR_UNKNOWN_ID;
+    }
+    return peer->out_len > 0 ? RF_WOULD_BLOCK : RF_OK;
+}
+
+rf_status rf_reply_again(rf_peer *peer, rf_id id, uint64_t number, size_t body_len,
+                         uint8_t flags, uint8_t header[RF_HEADER_SIZE]) {
+    const taken *t = NULL;
+    rf_status status = again(peer, &id, &t);
+    if (status != RF_OK) {
+        return status;
+    }
+    if (number >= t->replies) {
+        return RF_ERR_STATE;
+    }
+    return answer_header(peer, RF_REPLY, flags, id, number, body_len, header);
+}
+
+rf_status rf_end_again(rf_peer *peer, rf_id id, uint8_t header[RF_HEADER_SIZE]) {
+    const taken *t = NULL;
+    rf_status status = again(peer, &id, &t);
+    if (status != RF_OK) {
+        return status;
+    }
+    if (!t->ended) {
+        return RF_ERR_STATE;
+    }
+    return answer_header(peer, RF_END, 0, id, t->replies, 0, header);
+}
+
 static rf_status read_preface(rf_peer *peer, const uint8_t *in, size_t len, uint64_t now,
                               size_t *used, rf_event *event) {
     uint16_t capabilities = 0;
@@ -337,14 +554,17 @@ rf_status rf_input(rf_peer *peer, const uint8_t *in, size_t len, uint64_t now, s
     if (header.kind == RF_END) {
         return read_end(peer, &header, now, used, event);
     }
-    /* No handler side yet: drop the request. */
-    return drop(peer, &header, len, used);
+    return read_request(peer, &header, in, len, now, used, event);
 }
 
 /* Whether an open request waits for RF_EV_RESEND on this connection. */
 static bool to_resend(const rf_peer *peer, const request *r) {
     return peer->link == LINK_READY && drops_repeats(peer) && r->used &&
            r->sent_on != peer->connection && r->asked_on != peer->connection;
+}
+
+static uint64_t forget_at(const rf_peer *peer, const taken *t) {
+    return add(t->deadline, peer->config.keep_ms);
 }
 
 void rf_poll(rf_peer *peer, uint64_t now, rf_event *event) {
@@ -370,6 +590,16 @@ void rf_poll(rf_peer *peer, uint64_t now, rf_event *event) {
             return;
         }
     }
+    for (uint32_t i = 0; i < peer->config.max_ids; i++) {
+        taken *t = &peer->ids[i];
+        /* A handler that never ends keeps its id (rule 7). */
+        if (t->used && t->ended && now >= forget_at(peer, t)) {
+            t->used = false;
+            event->kind = RF_EV_FORGOT;
+            event->id = t->id;
+            return;
+        }
+    }
 }
 
 static uint64_t earlier(uint64_t a, uint64_t b) { return a < b ? a : b; }
@@ -383,6 +613,12 @@ uint64_t rf_next_time(const rf_peer *peer) {
         const request *r = &peer->requests[i];
         if (r->used) {
             next = earlier(next, to_resend(peer, r) ? 0 : r->deadline);
+        }
+    }
+    for (uint32_t i = 0; i < peer->config.max_ids; i++) {
+        const taken *t = &peer->ids[i];
+        if (t->used && t->ended) {
+            next = earlier(next, forget_at(peer, t));
         }
     }
     return next;

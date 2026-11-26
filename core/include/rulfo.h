@@ -51,7 +51,10 @@ typedef enum {
     RF_ERR_MEMORY,     /* the memory is too small or not aligned */
     RF_ERR_NOT_READY,  /* no connection, or its handshake is not done */
     RF_ERR_FULL,       /* too many open requests */
-    RF_ERR_EXPIRED     /* the deadline has passed */
+    RF_ERR_EXPIRED,    /* the deadline has passed */
+    RF_ERR_UNKNOWN_ID, /* no request with this id was taken, or it is forgotten */
+    RF_OFFLINE,        /* not an error: recorded; keep the body, send nothing */
+    RF_DROPPED         /* not an error: the refusal is not sent */
 } rf_status;
 
 typedef enum {
@@ -163,6 +166,8 @@ typedef struct {
     uint32_t handshake_ms;    /* longest wait for the other CLOCK */
     uint32_t keep_ms;         /* how long an id is kept after its deadline, >= handshake_ms */
     uint32_t max_requests;    /* open requests this side can have */
+    uint32_t max_ids;         /* request ids this side can keep as the replier */
+    uint32_t max_deadline_ms; /* a request with a deadline further away is refused */
 } rf_config;
 
 typedef enum {
@@ -171,7 +176,10 @@ typedef enum {
     RF_EV_CLOSE,   /* close the transport and call rf_disconnected; `status` says why */
     RF_EV_REPLY,   /* a reply to a request: `id`, `number`, `flags`, `body` */
     RF_EV_OUTCOME, /* a request ended: `id`, `outcome`, `number` replies arrived */
-    RF_EV_RESEND   /* send this open request again: rf_request with `id`, `deadline`, repeat 1 */
+    RF_EV_RESEND,  /* send this open request again: rf_request with `id`, `deadline`, repeat 1 */
+    RF_EV_REQUEST, /* run this: `id`, `key`, `body`, `deadline`, `flags`; answer with rf_end */
+    RF_EV_REPEAT,  /* `id` came again, marked: `number` replies sent, `ended`; see rf_reply_again */
+    RF_EV_FORGOT   /* `id` is forgotten: the stored replies can be freed */
 } rf_event_kind;
 
 typedef enum {
@@ -181,20 +189,22 @@ typedef enum {
     RF_UNROUTABLE /* no handler for the key: it did not run */
 } rf_outcome;
 
-/* What happened. Only the fields named at the kind are set. `body` points into the `in` of
- * rf_input and is valid until the caller changes those bytes. */
+/* What happened. Only the fields named at the kind are set. `key` and `body` point into the
+ * `in` of rf_input and are valid until the caller changes those bytes. */
 typedef struct {
     uint8_t kind;    /* an rf_event_kind */
-    uint8_t flags;   /* REPLY: RF_REPLY_ERROR or 0 */
+    uint8_t flags;   /* REPLY: RF_REPLY_ERROR or 0. REQUEST: RF_REQUEST_REPEAT or 0 */
     uint8_t outcome; /* an rf_outcome */
+    uint8_t ended;   /* REPEAT: not 0 when the end was sent */
     rf_status status;
     rf_id id;
     uint64_t number;
     uint64_t deadline; /* on the caller's clock */
+    rf_bytes key;
     rf_bytes body;
 } rf_event;
 
-/* The default settings: 16 MiB, 1024 bytes, 5 s, 60 s and 64 requests. */
+/* The default settings: 16 MiB, 1024 bytes, 5 s, 60 s, 64 requests, 512 ids and 1 hour. */
 void rf_config_default(rf_config *config);
 
 /* The bytes of memory a peer with `config` needs. 0 when a setting is out of range. */
@@ -216,6 +226,7 @@ void rf_disconnected(rf_peer *peer);
  * remaining bytes again.
  * RF_NEED_MORE: nothing is consumed. Add bytes after these and call again.
  * RF_WOULD_BLOCK: nothing is consumed. Take the bytes of rf_output and call again.
+ * A request that this side cannot accept is refused as busy by the core, without an event.
  * RF_ERR_STATE: there is no open connection.
  * Any other status is a protocol error: `event` is RF_EV_CLOSE and the connection is over. */
 rf_status rf_input(rf_peer *peer, const uint8_t *in, size_t len, uint64_t now, size_t *used,
@@ -238,6 +249,33 @@ rf_status rf_input(rf_peer *peer, const uint8_t *in, size_t len, uint64_t now, s
  * repeated ids. */
 rf_status rf_request(rf_peer *peer, rf_id id, rf_bytes key, size_t body_len, uint64_t deadline,
                      int repeat, uint64_t now, uint8_t header[RF_HEADER_SIZE]);
+
+/* The replier side. After RF_EV_REQUEST, the caller sends any number of replies and then one
+ * end, or refuses. Each call writes a header; the caller sends it, then `body_len` bytes.
+ *
+ * rf_reply and rf_end return RF_OFFLINE without a connection that can be used: the core counted
+ * the frame, the caller keeps the body for rf_reply_again and sends nothing now.
+ * RF_ERR_UNKNOWN_ID, RF_ERR_STATE after the end, RF_WOULD_BLOCK (take the bytes of rf_output
+ * first; nothing is counted), and a codec status for a bad flag or length. */
+rf_status rf_reply(rf_peer *peer, rf_id id, size_t body_len, uint8_t flags,
+                   uint8_t header[RF_HEADER_SIZE]);
+rf_status rf_end(rf_peer *peer, rf_id id, uint8_t header[RF_HEADER_SIZE]);
+
+/* Refuses a request instead of running it, with RF_END_BUSY or RF_END_NO_HANDLER, before any
+ * reply. The core forgets the id.
+ * RF_OK: send the header.
+ * RF_DROPPED: send nothing. The copy was marked as sent again, or the connection that brought
+ * it has ended (rule 11).
+ * RF_ERR_UNKNOWN_ID, RF_ERR_STATE after a reply or the end, RF_ERR_FLAGS, RF_WOULD_BLOCK. */
+rf_status rf_refuse(rf_peer *peer, rf_id id, uint8_t end_flag, uint8_t header[RF_HEADER_SIZE]);
+
+/* After RF_EV_REPEAT, to send stored replies again: all of them from number 0, in order, before
+ * any new reply, then the end if it was sent. Or send nothing.
+ * RF_ERR_NOT_READY, RF_ERR_UNKNOWN_ID, RF_ERR_STATE for a number or an end that was never sent,
+ * RF_WOULD_BLOCK, and a codec status. */
+rf_status rf_reply_again(rf_peer *peer, rf_id id, uint64_t number, size_t body_len,
+                         uint8_t flags, uint8_t header[RF_HEADER_SIZE]);
+rf_status rf_end_again(rf_peer *peer, rf_id id, uint8_t header[RF_HEADER_SIZE]);
 
 /* Moves up to `cap` bytes that the core wants sent into `out`. Returns how many. */
 size_t rf_output(rf_peer *peer, uint8_t *out, size_t cap);
