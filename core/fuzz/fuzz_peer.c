@@ -59,6 +59,7 @@ static void check_event(world *w, const rf_event *e) {
     switch (e->kind) {
     case RF_EV_REPLY:
         REQUIRE(n < IDS && w->open[n] && e->number == w->replies[n]);
+        REQUIRE(w->now < w->deadline[n]); /* nothing arrives after the deadline */
         /* The frames that frame_from makes say their number in the first body byte. */
         REQUIRE(!w->clean || e->body.len == 0 || e->body.ptr[0] == (uint8_t)e->number);
         w->replies[n]++;
@@ -254,6 +255,7 @@ static void call(world *w, source *s) {
             if (!w->open[n]) {
                 w->open[n] = true;
                 w->replies[n] = 0;
+                w->deadline[n] = deadline;
             }
         }
         break;
