@@ -22,7 +22,9 @@ Rules:
 
 1. A request has a deadline: a time on the requester's clock. There is no request without one.
 2. A request has an id, chosen by the requester. 16 bytes. A replier runs one id at most once.
-3. A reply carries the id of its request. A reply for an unknown or ended id is dropped.
+3. A reply carries the id of its request and its number, from 0. The requester drops a reply for
+   an unknown or ended id. From one replier it takes only the next number: it drops a number it
+   already has, and a higher one.
 4. A replier is not required to reply. It is required to end. A replier that never ends is
    covered by the deadline.
 5. An end carries the number of replies the replier sent. The requester accepts the end only when
@@ -33,7 +35,9 @@ Rules:
    60 s by default). It never forgets the id earlier, never while the handler runs, and never to
    make room for another id.
 8. A replier drops a copy that it reads after the deadline.
-9. A replier looks up the id first. It drops a copy with a known id and answers nothing.
+9. A replier looks up the id first, and never runs a copy with a known id. If such a copy is
+   marked as sent again, the replier may [send its replies again](#replies-lost-in-a-reconnect).
+   Otherwise it answers nothing.
 10. A replier refuses a new request that it cannot accept: its store of ids is full, or the
     deadline is longer than the replier accepts (a setting). It sends an end marked busy and does
     not run the handler. A replier that does not drop repeated ids has no store, so only the
@@ -52,6 +56,23 @@ Rules:
     at most the keep time minus the handshake limit: 55 s with the defaults. The clock does not
     jump. One process with its own monotonic clock meets this rule. Several processes (several
     API replicas, or a restart that keeps open requests) need a clock they share.
+
+### Replies lost in a reconnect
+
+A replier that gets a known id, marked as sent again, tells its program the number of replies sent
+and whether the end was sent. The program stores the replies: rulfo does not.
+
+The program chooses one of two:
+
+- Send the replies again: all of them, from number 0, in order, before any new reply. Then send
+  the end again, if it was sent.
+- Send nothing. If a reply or the end was lost, the outcome is `expired`.
+
+The program keeps stored replies no longer than the replier keeps the id. It may keep fewer, for
+example under a size limit.
+
+A reply that arrives twice reaches the caller once (rule 3). The count in the end stays correct
+(rule 5). A refused request has no stored id, so nothing is sent again for it.
 
 ### Clocks
 

@@ -102,6 +102,9 @@ most that limit. [Operations](operations.md#clocks) says how long a replier keep
     - a second CLOCK, or another frame before the CLOCK
     - no CLOCK within the handshake limit
 - REPLY or END for an id with no open request: dropped. Not an error.
+- REPLY with a number other than the next expected from that peer: dropped. Not an error.
+- A replier may send the REPLY and END frames of one id again, from number 0, after a REQUEST with
+  bit 0.
 - A replier sends END with a flag only for a REQUEST without bit 0.
 - END with bit 0 from every peer: the outcome is `unroutable`.
 - END from every peer, at least one with bit 1: the outcome is `busy`.
@@ -109,5 +112,4 @@ most that limit. [Operations](operations.md#clocks) says how long a replier keep
 ## Open questions
 
 - A frame that tells a replier to stop work, when the requester no longer waits.
-- Replies lost in a reconnect are not sent again: a repeat of an ended id gets no answer, and the
-  requester sees `expired`. Not decided: whether the host may send the replies again.
+- Sending replies again from a number other than 0.
