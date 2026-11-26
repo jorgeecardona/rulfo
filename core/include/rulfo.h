@@ -1,0 +1,101 @@
+/* rulfo: the frame codec of wire format version 1 (docs/wire-format.md).
+ *
+ * The functions do no I/O and allocate no memory. They read and write the caller's buffers.
+ */
+#ifndef RULFO_H
+#define RULFO_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define RF_VERSION 1
+#define RF_PREFACE_SIZE 8
+#define RF_HEADER_SIZE 32
+
+/* The default for the largest `length` (key plus body) a peer accepts. */
+#define RF_DEFAULT_MAX_LENGTH (16u * 1024u * 1024u)
+
+/* Capability bit of the preface: this peer drops repeated request ids. */
+#define RF_CAP_DROPS_REPEATS 0x0001u
+
+#define RF_REQUEST_REPEAT 0x01u
+#define RF_REPLY_ERROR 0x01u
+#define RF_END_NO_HANDLER 0x01u
+#define RF_END_BUSY 0x02u
+
+typedef enum {
+    RF_OK = 0,
+    RF_NEED_MORE,      /* not an error: call again with more bytes */
+    RF_ERR_SPACE,      /* the output buffer is too small */
+    RF_ERR_MAGIC,      /* the preface does not start with RULF */
+    RF_ERR_VERSION,    /* a version this library does not implement */
+    RF_ERR_RESERVED,   /* a non-zero reserved byte */
+    RF_ERR_LENGTH,     /* key plus body is above the largest accepted */
+    RF_ERR_KEY_LENGTH, /* the key length is above `length` or above 65535 */
+    RF_ERR_KIND,       /* unknown kind */
+    RF_ERR_FLAGS,      /* unknown flag, or flags that exclude each other */
+    RF_ERR_KEY,        /* a key on a kind without a key, or a key that is not UTF-8 */
+    RF_ERR_ARGUMENT    /* END with a flag and a reply count other than 0 */
+} rf_status;
+
+typedef enum {
+    RF_REQUEST = 0x01,
+    RF_REPLY = 0x02,
+    RF_END = 0x03
+} rf_kind;
+
+/* Bytes the caller owns. `ptr` may be NULL when `len` is 0. */
+typedef struct {
+    const uint8_t *ptr;
+    size_t len;
+} rf_bytes;
+
+typedef struct {
+    uint8_t bytes[16];
+} rf_id;
+
+typedef struct {
+    uint8_t kind; /* an rf_kind */
+    uint8_t flags;
+    rf_id id;
+    /* REQUEST: milliseconds until the deadline. REPLY: its number. END: replies sent. */
+    uint64_t argument;
+    rf_bytes key;
+    rf_bytes body;
+} rf_frame;
+
+/* Writes the 8 bytes each side sends before its first frame. */
+void rf_preface_encode(uint16_t capabilities, uint8_t out[RF_PREFACE_SIZE]);
+
+/* Reads the preface of the other side from the first RF_PREFACE_SIZE bytes of `in`.
+ * Returns RF_NEED_MORE when `len` is smaller. `capabilities` is set only on RF_OK and keeps
+ * the bits this library does not know. */
+rf_status rf_preface_decode(const uint8_t *in, size_t len, uint16_t *capabilities);
+
+/* Reads one frame from the start of `in`. `max_length` is the largest key plus body accepted.
+ *
+ * RF_OK: `frame` is set, its key and body point into `in`, and `size` is the bytes it used.
+ * RF_NEED_MORE: `size` is the number of bytes needed, as far as the input tells: the header
+ * size, then the size of the whole frame. `frame` is not changed.
+ * Any other status is a protocol error: close the connection. A `length` above `max_length` is
+ * refused after 4 bytes, and a bad header after RF_HEADER_SIZE bytes, before its body. */
+rf_status rf_frame_decode(const uint8_t *in, size_t len, uint32_t max_length, rf_frame *frame,
+                          size_t *size);
+
+/* Writes one frame to `out`, which must not overlap the key or the body.
+ *
+ * RF_OK: `size` is the bytes written. RF_ERR_SPACE: `size` is the bytes needed.
+ * A frame that rf_frame_decode would refuse is refused with the same status.
+ * On any status other than RF_OK nothing is written to `out`. */
+rf_status rf_frame_encode(const rf_frame *frame, uint32_t max_length, uint8_t *out, size_t cap,
+                          size_t *size);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* RULFO_H */

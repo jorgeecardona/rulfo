@@ -34,6 +34,12 @@ tasks:
     command: 'uv run --isolated --python 3.12 --with-editable . --with pytest --with musil pytest -q'
     inputs: ['src/**/*.py', 'models/**/*.py', 'tests/**/*.py', 'pyproject.toml']
 
+  # The C core, built with AddressSanitizer and UndefinedBehaviorSanitizer. Needs cmake and a C
+  # compiler. The libFuzzer target is `make fuzz` (clang), not part of :ci.
+  core-test:
+    command: 'sh scripts/core-test'
+    inputs: ['core/**/*', 'scripts/core-test']
+
   build:
     command: 'uv build --out-dir dist'
     deps: ['~:test']
@@ -74,6 +80,7 @@ tasks:
       - '~:typecheck'
       - '~:test'
       - '~:test-floor'
+      - '~:core-test'
       - '~:build'
       - '~:docs'
       - '~:version-guard'

@@ -14,7 +14,7 @@ rulfo: Messaging between processes where a request gets zero, one or many replie
 ## Test
 
 - `make test` runs the suite.
-- `make check` runs lint + typecheck + test (the same stage CI runs via `moon run :ci`).
+- `make check` runs lint, format-check, typecheck, the Python tests and the C tests (`core-test`).
 - Everything in `make check` must pass before you commit.
 
 ## Style
@@ -27,7 +27,9 @@ rulfo: Messaging between processes where a request gets zero, one or many replie
 
 - `models/` holds the musil models. They are the specification: change the model and
   `docs/operations.md` before the code. Each property needs a test where it fails.
-- No C code yet. The Python package `rulfo` is empty until the binding exists.
+- `core/` is the C code. `docs/wire-format.md` is its specification. A change to the bytes needs
+  the doc, `core/tests/test_frame.c` and `make fuzz`.
+- The Python package `rulfo` is empty until the binding exists.
 
 - Version lives as `__version__` in `src/rulfo/__init__.py`; `pyproject.toml` reads it via `[tool.hatch.version]` (`version` is `dynamic`). The pre-commit hook auto-bumps it when `src/` changes. Do not edit versions by hand elsewhere.
 - Record follow-ups in `docs/issues/`, not as scattered TODO comments.

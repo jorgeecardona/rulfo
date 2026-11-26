@@ -1,0 +1,10 @@
+#!/bin/sh
+# Fuzz the C frame codec with libFuzzer. Needs clang.
+#
+# Usage: scripts/core-fuzz [seconds]   (default 60)
+set -e
+cd "$(dirname "$0")/.."
+cmake -S core -B build/fuzz -DCMAKE_C_COMPILER=clang -DRULFO_FUZZ=ON >/dev/null
+cmake --build build/fuzz --parallel 2
+mkdir -p build/corpus
+build/fuzz/fuzz_frame -max_total_time="${1:-60}" -max_len=4096 -print_final_stats=1 build/corpus

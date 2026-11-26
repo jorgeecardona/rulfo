@@ -48,7 +48,7 @@ path = "src/rulfo/__init__.py"
 packages = ["src/rulfo"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "models", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+include = ["src", "core", "scripts/core-test", "scripts/core-fuzz", "models", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [tool.uv]
 # The version is dynamic (hatchling reads __version__ from the file below), so uv must watch it too:
