@@ -1,0 +1,11 @@
+#!/bin/sh
+# Build the macOS wheel into dist-macos/: arm64 and x86_64 in one file, for CPython 3.12 and
+# later. It uses no library outside the system, so it needs no repair step. Needs a C compiler.
+set -e
+cd "$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
+
+mkdir -p dist-macos
+find dist-macos -maxdepth 1 -type f -name 'rulfo-*' -delete
+
+uv build --wheel --python 3.12 --out-dir dist-macos
+ls dist-macos

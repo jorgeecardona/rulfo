@@ -1,0 +1,12 @@
+#!/bin/sh
+# Run the tests on each CPython given, or on all that rulfo supports, each in a new isolated
+# environment (not .venv). Needs a C compiler.
+set -e
+cd "$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
+
+[ "$#" -gt 0 ] || set -- 3.12 3.13 3.14 3.15
+for python; do
+    echo "== CPython $python"
+    uv run --isolated --python "$python" --with-editable . --with pytest --with pytest-parallex \
+        --with musil pytest
+done

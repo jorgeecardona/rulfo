@@ -3,9 +3,10 @@
 # rulfo — Messaging between processes where a request gets zero, one or many replies and always an end.
 # Single project at the repo root. Every task runs as a system command via `uv run`
 # (see .moon/toolchain.yml for why moon's Python toolchain is not used). CI runs one
-# `moon run :ci` (lint, format-check, typecheck, test, test-floor, core-test, binding-asan,
+# `moon run :ci` (lint, format-check, typecheck, test, core-test, binding-asan,
 # build, test-wheel, docs, version-guard, version-ahead) -- or `:release` on main; moon owns all task ordering
-# instead of hand-wired GitLab stages/needs.
+# instead of hand-wired GitLab stages/needs. The other jobs of .gitlab-ci.yml run the tests on
+# each CPython (scripts/test-python) and build the macOS wheel.
 id: 'rulfo'
 layer: 'library'
 language: 'python'
@@ -27,13 +28,6 @@ tasks:
     command: 'uv run pytest -q'
     inputs: ['src/**/*.py*', 'models/**/*.py', 'tests/**/*.py', 'core/**/*', 'hatch_build.py', 'pyproject.toml']
 
-  # Run the suite against the lowest supported Python in a throwaway isolated env (not .venv),
-  # so a feature that quietly needs a newer interpreter is caught at the floor rather than by a
-  # user on 3.12. --with-editable . installs this package; pytest is pulled in too.
-  test-floor:
-    command: 'uv run --isolated --python 3.12 --with-editable . --with pytest --with pytest-parallex --with musil pytest -q'
-    inputs: ['src/**/*.py*', 'models/**/*.py', 'tests/**/*.py', 'core/**/*', 'hatch_build.py', 'pyproject.toml']
-
   # The C core, built with AddressSanitizer and UndefinedBehaviorSanitizer. Needs cmake and a C
   # compiler. The libFuzzer target is `make fuzz` (clang), not part of :ci.
   core-test:
@@ -47,7 +41,7 @@ tasks:
 
     outputs: ['dist']
 
-  # The built wheel, installed on the oldest and a new CPython.
+  # The built wheel, installed on each CPython that rulfo supports.
   test-wheel:
     command: 'sh scripts/test-wheel'
     deps: ['~:build']
@@ -95,7 +89,6 @@ tasks:
       - '~:format-check'
       - '~:typecheck'
       - '~:test'
-      - '~:test-floor'
       - '~:core-test'
       - '~:binding-asan'
       - '~:build'

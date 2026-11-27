@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-11-27
+
+### Added
+
+- A macOS wheel (macOS 11 or later, Apple silicon and Intel). Sources also build on macOS.
+- CPython 3.15 in the tested versions: the tests run on 3.12, 3.13, 3.14 and 3.15.
+
 ## [0.1.9] - 2026-11-27
 
 ### Added

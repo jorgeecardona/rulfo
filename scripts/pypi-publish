@@ -11,6 +11,14 @@ if [ -z "${PYPI_ID_TOKEN:-}" ]; then
     exit 1
 fi
 
+# The macOS wheel comes from the wheel-macos job. A version without it is not published.
+set -- dist-macos/rulfo-*-macosx_*.whl
+if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+    echo "pypi-publish: dist-macos/ has no macOS wheel (did the wheel-macos job run?)" >&2
+    exit 1
+fi
+cp "$1" dist/
+
 # Exchange the OIDC id_token for a one-shot PyPI token. Done in Python via `uv run`
 # (the base image may lack a system python3); the token is captured, never echoed.
 pypi_token="$(uv run python -c 'import json, os, urllib.request;

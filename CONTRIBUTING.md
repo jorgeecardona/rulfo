@@ -69,6 +69,9 @@ Releases are automated — there is no manual tag or publish step:
 3. **`:release`** runs on a green `main` pipeline (after the full `:ci` graph as deps): if the
    package version isn't on PyPI yet, it publishes via OIDC Trusted Publishing. So merging a
    version bump to `main` releases itself — no second pipeline, no tag required.
+4. **Two jobs gate it.** `test-python` runs the tests on CPython 3.12 to 3.15. `wheel-macos`
+   builds and tests the macOS wheel on a Mac runner. A version without that wheel is not published:
+   run the pipeline again from GitLab ("Run pipeline"), which runs the Mac job.
 
 ### One-time setup
 

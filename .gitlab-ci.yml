@@ -23,7 +23,64 @@ workflow:
       when: never
     - if: $CI_COMMIT_BRANCH
 
+# What a Linux job needs before it can call uv and moon.
+.linux-toolchain:
+  before_script:
+    # debian-slim is bare: bring what proto + pyright's bundled node (libatomic1) need.
+    - apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates unzip xz-utils bash libatomic1 cmake make gcc libc6-dev
+    - export PATH="$HOME/.proto/bin:$HOME/.proto/shims:$PATH"
+    # Fetch proto straight from its GitHub release. moonrepo.dev/install/proto.sh merely downloads
+    # this tarball, and the runner's access to moonrepo.dev is flaky (curl SSL timeouts); GitHub is
+    # reliable. `proto install` then pulls the pinned toolchain from each tool's own upstream — not
+    # moonrepo. (Same fix as paas's CI image.)
+    - mkdir -p "$HOME/.proto/bin" /tmp/proto && curl -fsSL "https://github.com/moonrepo/proto/releases/latest/download/proto_cli-x86_64-unknown-linux-gnu.tar.xz" -o /tmp/proto/p.tar.xz && tar xf /tmp/proto/p.tar.xz --strip-components 1 -C /tmp/proto && mv /tmp/proto/proto /tmp/proto/proto-shim "$HOME/.proto/bin/" && rm -rf /tmp/proto
+    - proto install                       # moon + uv, pinned in .prototools
+    - uv sync --frozen --extra docs       # ruff + pyright + pytest + mkdocs
+
+# The tests on each CPython that rulfo supports. `ci` publishes only when all of them pass.
+test-python:
+  extends: .linux-toolchain
+  parallel:
+    matrix:
+      - PYTHON: ["3.12", "3.13", "3.14", "3.15"]
+  script:
+    - export PATH="$HOME/.proto/bin:$HOME/.proto/shims:$PATH"
+    - sh scripts/test-python "$PYTHON"
+
+# The macOS wheel (arm64 and x86_64), installed and tested on each CPython. A Mac runner costs
+# six times a Linux one, so it runs only when what is in the wheel or its tests changed. A version
+# bump changes src/, so every release has the wheel: scripts/pypi-publish refuses without it.
+wheel-macos:
+  tags: [saas-macos-medium-m1]
+  image: macos-26-xcode-26
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - src/**/*
+        - core/**/*
+        - tests/**/*
+        - models/**/*
+        - hatch_build.py
+        - pyproject.toml
+        - scripts/*
+        - .gitlab-ci.yml
+  script:
+    - curl -LsSf https://astral.sh/uv/0.13.1/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+    - sh scripts/build-wheel-macos
+    - sh scripts/test-wheel dist-macos
+    - sh scripts/test-python
+  artifacts:
+    paths:
+      - dist-macos
+    expire_in: 1 day
+
 ci:
+  extends: .linux-toolchain
+  needs:
+    - job: test-python
+    - job: wheel-macos
+      optional: true
   # OIDC Trusted Publishing: GitLab mints a short-lived id_token; scripts/pypi-publish
   # exchanges it for a one-shot PyPI token. The `pypi` environment matches the PyPI
   # publisher config (it is also recorded on non-publishing runs -- cosmetic only).
@@ -39,17 +96,6 @@ ci:
           - uv.lock
       paths:
         - .venv
-  before_script:
-    # debian-slim is bare: bring what proto + pyright's bundled node (libatomic1) need.
-    - apt-get update && apt-get install -y --no-install-recommends curl git ca-certificates unzip xz-utils bash libatomic1 cmake make gcc libc6-dev
-    - export PATH="$HOME/.proto/bin:$HOME/.proto/shims:$PATH"
-    # Fetch proto straight from its GitHub release. moonrepo.dev/install/proto.sh merely downloads
-    # this tarball, and the runner's access to moonrepo.dev is flaky (curl SSL timeouts); GitHub is
-    # reliable. `proto install` then pulls the pinned toolchain from each tool's own upstream — not
-    # moonrepo. (Same fix as paas's CI image.)
-    - mkdir -p "$HOME/.proto/bin" /tmp/proto && curl -fsSL "https://github.com/moonrepo/proto/releases/latest/download/proto_cli-x86_64-unknown-linux-gnu.tar.xz" -o /tmp/proto/p.tar.xz && tar xf /tmp/proto/p.tar.xz --strip-components 1 -C /tmp/proto && mv /tmp/proto/proto /tmp/proto/proto-shim "$HOME/.proto/bin/" && rm -rf /tmp/proto
-    - proto install                       # moon + uv, pinned in .prototools
-    - uv sync --frozen --extra docs       # ruff + pyright + pytest + mkdocs
   script:
     # One moon invocation owns all interdependence. `-c 1` (serial) sidesteps the proto
     # temp-rename race a parallel fan-out can hit; `proto install` above also pre-warmed

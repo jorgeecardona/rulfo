@@ -74,7 +74,8 @@ Each side sends one CLOCK on each connection. It is its first frame, and it send
 the other preface.
 
 A clock value is milliseconds from any start point. The clock never goes back, does not jump and
-counts the time the machine is suspended (on Linux, `CLOCK_BOOTTIME`).
+counts the time the machine is suspended (on Linux, `CLOCK_BOOTTIME`; on macOS,
+`CLOCK_MONOTONIC_RAW`).
 
 The argument of REQUEST is a time on the requester's clock. The replier converts it:
 

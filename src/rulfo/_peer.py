@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -61,7 +62,11 @@ def timeout_ms(timeout: float) -> int:
 
 def _boot_clock() -> int:
     """Milliseconds that never go back and count the time the machine is suspended."""
-    return time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
+    if sys.platform == "darwin":  # on macOS this one goes on while the machine sleeps
+        clock = time.CLOCK_MONOTONIC_RAW
+    else:
+        clock = time.CLOCK_BOOTTIME
+    return time.clock_gettime_ns(clock) // 1_000_000
 
 
 @dataclass(eq=False)

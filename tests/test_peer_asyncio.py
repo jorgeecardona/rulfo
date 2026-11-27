@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import tempfile
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
 from typing import Any
@@ -662,16 +663,22 @@ def test_a_request_that_cannot_be_sent(key: str, size: int) -> None:
     run(test)
 
 
-def test_over_a_unix_socket(tmp_path: Path) -> None:
+def test_over_a_unix_socket() -> None:
+    # Not tmp_path: macOS refuses a socket path above 104 bytes.
+    with tempfile.TemporaryDirectory() as folder:
+        _over_a_unix_socket(Path(folder) / "s")
+
+
+def _over_a_unix_socket(path: Path) -> None:
     async def test() -> None:
         server = Peer(handlers={"echo": echo})
 
         async def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
             await server.serve(StreamTransport(reader, writer))
 
-        listening = await asyncio.start_unix_server(accept, tmp_path / "rulfo.sock")
+        listening = await asyncio.start_unix_server(accept, path)
         client = Peer()
-        reader, writer = await asyncio.open_unix_connection(tmp_path / "rulfo.sock")
+        reader, writer = await asyncio.open_unix_connection(path)
         serving = asyncio.create_task(client.serve(StreamTransport(reader, writer)))
         await until(lambda: client.connected)
         body = bytes(range(256)) * 4096  # 1 MiB

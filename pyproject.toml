@@ -12,11 +12,13 @@ classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Framework :: AsyncIO",
     "Intended Audience :: Developers",
+    "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
 ]
@@ -55,7 +57,7 @@ packages = ["src/rulfo"]
 path = "hatch_build.py"
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "hatch_build.py", "core", "scripts/core-test", "scripts/core-fuzz", "models", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+include = ["src", "hatch_build.py", "core", "scripts/core-test", "scripts/core-fuzz", "scripts/test-python", "models", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [tool.uv]
 # The version is dynamic (hatchling reads __version__ from the file below), so uv must watch it too:

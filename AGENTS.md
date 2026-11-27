@@ -17,7 +17,9 @@ end. A Python package on a C core.
 - `make test` runs the suite.
 - `make check` runs lint, format-check, typecheck, the Python tests, the C tests (`core-test`)
   and the Python layer with sanitizers (`binding-asan`).
-- `moon run :test-wheel` builds the wheel and installs it on CPython 3.12 and 3.14.
+- `moon run :test-wheel` builds the wheel and installs it on CPython 3.12 to 3.15.
+- `sh scripts/test-python` runs the tests on CPython 3.12 to 3.15. CI runs it on Linux and on
+  macOS. The sanitizer, core and fuzz tests run on Linux only.
 - Everything in `make check` must pass before you commit.
 
 ## Style

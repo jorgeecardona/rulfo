@@ -44,3 +44,6 @@ CLAUDE.local.md
 # Rust extension build output (maturin develop)
 /rust/target/
 src/*/*.so
+
+# The macOS wheel, from scripts/build-wheel-macos
+/dist-macos/

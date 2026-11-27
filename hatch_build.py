@@ -31,6 +31,9 @@ CORE = ROOT / "core"
 MODULE = "_core.abi3.so"
 # The oldest CPython the module is built for, as a wheel tag.
 PYTHON_TAG = "cp312"
+# The macOS wheel holds both processor types and runs on this macOS and later.
+MACOS_VERSION = "11.0"
+MACOS_ARCHS = ["-arch", "arm64", "-arch", "x86_64"]
 SANITIZERS = ["-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-g"]
 
 
@@ -54,8 +57,11 @@ def declarations(header: str) -> str:
 
 def compile_core(out: Path, *, sanitize: bool = False) -> Path:
     """Compiles the module into ``out`` and returns its path."""
-    if sys.platform != "linux":
-        msg = "rulfo is built only for Linux"
+    if sys.platform not in ("linux", "darwin"):
+        msg = "rulfo is built only for Linux and macOS"
+        raise RuntimeError(msg)
+    if sanitize and sys.platform != "linux":
+        msg = "the sanitizer build is for Linux"
         raise RuntimeError(msg)
     if sysconfig.get_config_var("Py_GIL_DISABLED"):
         msg = "rulfo is not built for free-threaded Python"
@@ -69,7 +75,13 @@ def compile_core(out: Path, *, sanitize: bool = False) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     module = out / MODULE
     compiler = shlex.split(os.environ.get("CC", "cc"))
-    command = [*compiler, "-shared", "-fPIC", "-O2", "-std=c11", "-fvisibility=hidden"]
+    if sys.platform == "darwin":
+        # An extension module on macOS: the interpreter gives its symbols when it loads it.
+        link = ["-bundle", "-undefined", "dynamic_lookup", *MACOS_ARCHS]
+        link.append(f"-mmacosx-version-min={MACOS_VERSION}")
+    else:
+        link = ["-shared"]
+    command = [*compiler, *link, "-fPIC", "-O2", "-std=c11", "-fvisibility=hidden"]
     command += SANITIZERS if sanitize else []
     command += [f"-I{CORE / 'include'}", f"-I{sysconfig.get_paths()['include']}"]
     # Outside src/, which the sdist ships, and on the same file system for the rename.
@@ -90,7 +102,10 @@ class CoreBuildHook(BuildHookInterface[Any]):
 
     def initialize(self, version: str, build_data: dict[str, Any]) -> None:  # noqa: ARG002
         module = compile_core(ROOT / "src" / "rulfo")
-        platform = sysconfig.get_platform().replace("-", "_").replace(".", "_")
+        if sys.platform == "darwin":
+            platform = f"macosx_{MACOS_VERSION.replace('.', '_')}_universal2"
+        else:
+            platform = sysconfig.get_platform().replace("-", "_").replace(".", "_")
         build_data["pure_python"] = False
         build_data["tag"] = f"{PYTHON_TAG}-abi3-{platform}"
         build_data["artifacts"].append(module.relative_to(ROOT).as_posix())
