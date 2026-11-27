@@ -4,8 +4,8 @@
 # Bypass with `git commit --no-verify`.
 #
 # Two jobs only (the test suite is deferred to pre-push to keep commits quick):
-#   1. Auto-bump the patch version when the shipped Python source (src/**/*.py)
-#      changes, so __version__ in src/rulfo/__init__.py -- the single source
+#   1. Auto-bump the patch version when the shipped source (src/**/*.py and .pyi,
+#      core/src, core/include, hatch_build.py) changes, so __version__ in src/rulfo/__init__.py -- the single source
 #      of truth (pyproject reads it via [tool.hatch.version]) -- advances with every
 #      code change. Doc/notes (incl. src/*.md)/test/example/config-only commits do not bump.
 #   2. Lint the staged Python with ruff (the same linter CI runs).
@@ -16,9 +16,9 @@ cd "$(git rev-parse --show-toplevel)"
 mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM)
 [[ ${#staged[@]} -eq 0 ]] && exit 0
 
-# 1. auto-bump patch when the shipped Python source changed -- src/**/*.py only,
-#    so notes/docs under src/ don't trigger a release.
-if printf '%s\n' "${staged[@]}" | grep -qE '^src/.*\.py$'; then
+# 1. auto-bump patch when the shipped source changed: what is in the wheel. Notes/docs under
+#    src/ and the C tests don't trigger a release.
+if printf '%s\n' "${staged[@]}" | grep -qE '^(src/.*\.pyi?|core/(src|include)/.*|hatch_build\.py)$'; then
     # ...unless the version line is already moving in this commit. `make bump TYPE=minor`
     # followed by a commit that also touches src/ would otherwise bump twice: once by
     # hand, once here. That silently skips a version, and worse, it turns a deliberate

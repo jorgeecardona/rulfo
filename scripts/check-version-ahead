@@ -30,8 +30,9 @@ fi
 # Only a change to shipped Python source requires being ahead. Docs/notes (incl.
 # src/*.md)/test/example/config-only changes do not, matching check-version-bump.
 # Three-dot: compare HEAD against the merge-base, i.e. what this branch adds to main.
-if ! git diff --name-only "$BASE"...HEAD -- 'src/' | grep -q '\.py$'; then
-    echo "check-version-ahead: OK -- no src python changes vs origin/main"
+if ! git diff --name-only "$BASE"...HEAD -- src core/src core/include hatch_build.py |
+    grep -qE '\.(py|pyi|c|h)$'; then
+    echo "check-version-ahead: OK -- no shipped source changes vs origin/main"
     exit 0
 fi
 

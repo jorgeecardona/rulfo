@@ -18,7 +18,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
     "Typing :: Typed",
 ]
-dependencies = []
+dependencies = ["cffi>=2.0"]
 
 [project.optional-dependencies]
 # docs are an *extra* (not a uv dependency-group) so Read the Docs can install them via pip
@@ -36,7 +36,7 @@ Changelog = "https://gitlab.com/cardona-oss/rulfo/-/blob/main/CHANGELOG.md"
 Issues = "https://gitlab.com/cardona-oss/rulfo/-/issues"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "cffi>=2.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
@@ -47,14 +47,24 @@ path = "src/rulfo/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["src/rulfo"]
 
+# hatch_build.py compiles core/ into src/rulfo/_core.abi3.so, which git ignores.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
 [tool.hatch.build.targets.sdist]
-include = ["src", "core", "scripts/core-test", "scripts/core-fuzz", "models", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+include = ["src", "hatch_build.py", "core", "scripts/core-test", "scripts/core-fuzz", "models", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [tool.uv]
 # The version is dynamic (hatchling reads __version__ from the file below), so uv must watch it too:
 # declaring cache-keys REPLACES uv's defaults, so pyproject.toml is listed explicitly alongside it.
 # Without __init__.py here, bumping the version would not trigger an editable reinstall.
-cache-keys = [{ file = "pyproject.toml" }, { file = "src/rulfo/__init__.py" }]
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "src/rulfo/__init__.py" },
+    { file = "hatch_build.py" },
+    { file = "core/include/*.h" },
+    { file = "core/src/*.c" },
+]
 
 [dependency-groups]
 dev = [
@@ -64,6 +74,7 @@ dev = [
     "prodc>=0.11.4,<0.12",
     "musil>=0.36.12",
     "pytest-parallex>=0.2.8",
+    "hatchling",
 ]
 
 [tool.pytest.ini_options]
