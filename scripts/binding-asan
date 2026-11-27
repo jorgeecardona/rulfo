@@ -1,0 +1,16 @@
+#!/bin/sh
+# Run the tests of the Python layer against a module built with AddressSanitizer and
+# UndefinedBehaviorSanitizer. The module and a copy of the package go to build/asan.
+set -e
+cd "$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
+
+uv run python hatch_build.py build/asan/rulfo --sanitize >/dev/null
+cp src/rulfo/*.py src/rulfo/*.pyi src/rulfo/py.typed build/asan/rulfo/
+
+# The Python interpreter is not built with the sanitizer, so its runtime is loaded first. Leaks
+# are not checked: CPython keeps memory until it exits.
+libasan="$("${CC:-cc}" -print-file-name=libasan.so)"
+export LD_PRELOAD="$libasan" ASAN_OPTIONS=detect_leaks=0 PYTHONPATH="$PWD/build/asan"
+.venv/bin/python -c 'import rulfo._core as core; assert "build/asan" in core.__file__, core.__file__'
+.venv/bin/python -m pytest -q tests/test_core_module.py tests/test_peer_state.py \
+    tests/test_peer_state_walk.py tests/test_peer_asyncio.py

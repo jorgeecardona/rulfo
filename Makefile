@@ -5,7 +5,7 @@
 # (format = write, bump, setup, install-hooks, clean) run a command directly here.
 # One-time setup after cloning:  make setup
 .DEFAULT_GOAL := help
-.PHONY: help setup install-hooks format lint format-check typecheck test core-test fuzz check version-ahead bump docs build clean
+.PHONY: help setup install-hooks format lint format-check typecheck test core-test binding-asan fuzz check version-ahead bump docs build clean
 
 help: ## list targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -17,7 +17,7 @@ setup: ## one-time dev setup after cloning: sync deps + install git hooks
 
 install-hooks: ## point git at the tracked .githooks/ (pre-commit + pre-push)
 	git config core.hooksPath .githooks
-	chmod +x .githooks/pre-commit .githooks/pre-push scripts/bump-version scripts/check-version-bump scripts/check-version-ahead scripts/core-test scripts/core-fuzz
+	chmod +x .githooks/pre-commit .githooks/pre-push scripts/bump-version scripts/check-version-bump scripts/check-version-ahead scripts/core-test scripts/core-fuzz scripts/build-wheel scripts/test-wheel scripts/binding-asan
 	@echo "hooks installed: core.hooksPath -> .githooks"
 
 format: ## auto-format + autofix lint (ruff)
@@ -39,10 +39,13 @@ test: ## run the test suite -- the CI :test task
 core-test: ## build and test the C core with sanitizers -- the CI :core-test task
 	moon run :core-test
 
+binding-asan: ## the Python tests on a module with sanitizers -- the CI :binding-asan task
+	moon run :binding-asan
+
 fuzz: ## fuzz the C core with libFuzzer (clang) -- SECONDS=60 per target
 	./scripts/core-fuzz $(or $(SECONDS),60)
 
-check: lint format-check typecheck test core-test ## the CI test stage: lint + format + typecheck + tests
+check: lint format-check typecheck test core-test binding-asan ## the CI test stage: lint + format + typecheck + tests
 
 version-ahead: ## fail unless the version is greater than origin/main (when src/ changed) -- the CI :version-ahead task
 	moon run :version-ahead

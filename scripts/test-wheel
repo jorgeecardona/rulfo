@@ -1,0 +1,19 @@
+#!/bin/sh
+# Install the wheel of dist/ in a new virtualenv on CPython 3.12 and 3.14, send one request
+# between two peers, and check that the module keeps to the stable ABI.
+set -e
+root="$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
+set -- "$root"/dist/rulfo-*.whl
+[ "$#" -eq 1 ] && [ -f "$1" ] || { echo "test-wheel: dist/ must hold one wheel" >&2; exit 1; }
+wheel="$1"
+
+for python in 3.12 3.14; do
+    scratch="$(mktemp -d)"
+    uv venv --quiet --python "$python" "$scratch/venv"
+    uv pip install --quiet --python "$scratch/venv/bin/python" "$wheel"
+    # From another folder, so the source tree is not importable.
+    (cd "$scratch" && "$scratch/venv/bin/python" -I "$root/scripts/wheel-smoke.py")
+done
+
+uvx abi3audit --strict --report "$wheel" >/dev/null
+echo "test-wheel: $(basename "$wheel") passes"

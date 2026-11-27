@@ -19,6 +19,7 @@ import shlex
 import subprocess
 import sys
 import sysconfig
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -65,19 +66,20 @@ def compile_core(out: Path, *, sanitize: bool = False) -> Path:
     # PeerState allocates rf_peer with malloc, which gives the alignment the core asks for.
     builder.cdef("void *malloc(size_t size); void free(void *pointer);")
     builder.set_source("rulfo._core", '#include <stdlib.h>\n#include "rulfo.h"')
-    generated = ROOT / "build" / "ffi" / "_core.c"
-    generated.parent.mkdir(parents=True, exist_ok=True)
-    builder.emit_c_code(str(generated))
-
     out.mkdir(parents=True, exist_ok=True)
     module = out / MODULE
     compiler = shlex.split(os.environ.get("CC", "cc"))
     command = [*compiler, "-shared", "-fPIC", "-O2", "-std=c11", "-fvisibility=hidden"]
     command += SANITIZERS if sanitize else []
     command += [f"-I{CORE / 'include'}", f"-I{sysconfig.get_paths()['include']}"]
-    command += [str(generated), *sorted(str(path) for path in (CORE / "src").glob("*.c"))]
-    command += ["-o", str(module)]
-    subprocess.run(command, check=True)  # noqa: S603
+    with tempfile.TemporaryDirectory(dir=out) as scratch:
+        generated = Path(scratch) / "_core.c"
+        builder.emit_c_code(str(generated))
+        command += [str(generated), *sorted(str(path) for path in (CORE / "src").glob("*.c"))]
+        command += ["-o", str(Path(scratch) / MODULE)]
+        subprocess.run(command, check=True)  # noqa: S603
+        # A rename, so a process that runs now never loads a half written module.
+        (Path(scratch) / MODULE).replace(module)
     return module
 
 

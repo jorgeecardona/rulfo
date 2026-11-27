@@ -1,0 +1,15 @@
+#!/bin/sh
+# Build the sdist and the wheel into dist/. The wheel is made from the sdist, for CPython 3.12
+# and later on x86_64 or the machine this runs on, and auditwheel gives it its manylinux tag:
+# PyPI refuses a plain linux tag. Needs a C compiler.
+set -e
+cd "$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
+
+# `uv publish` uploads all of dist/, so only this build can be in it.
+mkdir -p dist build/wheelhouse
+find dist build/wheelhouse -maxdepth 1 -type f -name 'rulfo-*' -delete
+
+uv build --python 3.12 --out-dir build/wheelhouse
+uvx --with patchelf auditwheel repair --wheel-dir dist build/wheelhouse/rulfo-*.whl
+cp build/wheelhouse/rulfo-*.tar.gz dist/
+ls dist

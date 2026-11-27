@@ -41,11 +41,22 @@ tasks:
     inputs: ['core/**/*', 'scripts/core-test']
 
   build:
-    command: 'uv build --out-dir dist'
+    command: 'sh scripts/build-wheel'
     deps: ['~:test']
-    inputs: ['src/**/*.py*', 'core/**/*', 'hatch_build.py', 'pyproject.toml', 'README.md', 'CHANGELOG.md', 'LICENSE']
+    inputs: ['scripts/build-wheel', 'src/**/*.py*', 'core/**/*', 'hatch_build.py', 'pyproject.toml', 'README.md', 'CHANGELOG.md', 'LICENSE']
 
     outputs: ['dist']
+
+  # The built wheel, installed on the oldest and a new CPython.
+  test-wheel:
+    command: 'sh scripts/test-wheel'
+    deps: ['~:build']
+    inputs: ['dist/*', 'scripts/test-wheel', 'scripts/wheel-smoke.py']
+
+  # The tests of the Python layer on a module built with the sanitizers.
+  binding-asan:
+    command: 'sh scripts/binding-asan'
+    inputs: ['src/**/*.py*', 'core/**/*', 'tests/**/*.py', 'hatch_build.py', 'scripts/binding-asan']
 
   docs:
     command: 'uv run --extra docs mkdocs build --strict'
@@ -81,7 +92,9 @@ tasks:
       - '~:test'
       - '~:test-floor'
       - '~:core-test'
+      - '~:binding-asan'
       - '~:build'
+      - '~:test-wheel'
       - '~:docs'
       - '~:version-guard'
       - '~:version-ahead'
