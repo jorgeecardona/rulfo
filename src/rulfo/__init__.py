@@ -1,6 +1,7 @@
 """Messaging where a request gets zero, one or many replies and always an end."""
 
 from rulfo._peer import Handler, Peer, Request
+from rulfo._server import Server
 from rulfo._state import PeerState
 from rulfo._transport import StreamTransport, Transport
 from rulfo._types import (
@@ -24,7 +25,7 @@ from rulfo._types import (
     RulfoError,
 )
 
-__version__ = "0.1.8"  # the single source of truth; pyproject reads it via [tool.hatch.version]
+__version__ = "0.1.9"  # the single source of truth; pyproject reads it via [tool.hatch.version]
 
 __all__ = [
     "Busy",
@@ -49,6 +50,7 @@ __all__ = [
     "RequestReceived",
     "Result",
     "RulfoError",
+    "Server",
     "StreamTransport",
     "Transport",
 ]

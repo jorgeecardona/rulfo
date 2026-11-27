@@ -65,6 +65,26 @@ needs:
     proofs:
       - "test:tests/test_readme.py::test_the_quickstart_runs"
 
+  - id: RF-8
+    text: >
+      When the developer serves several clients, they can send a request to one of them by name,
+      and its handlers can read who is calling.
+    sources:
+      - {kind: secondary, date: 2026-11-27, locator: "README.md#key-features"}
+    proofs:
+      - "test:tests/test_server.py::test_a_server_serves_several_parties_by_name"
+      - "test:tests/test_server.py::test_a_party_that_reconnects_keeps_its_peer_and_its_request_runs_once"
+
+  - id: RF-9
+    text: >
+      When the process that sent a request stops, the developer can send it again from a second
+      process, and the request runs once while the other side lives.
+    sources:
+      - {kind: secondary, date: 2026-11-27, locator: "README.md#key-features"}
+    proofs:
+      - "test:tests/test_server.py::test_a_second_process_takes_over_a_request_that_runs_once"
+      - "test:tests/test_server.py::test_a_copy_that_was_sent_before_waits_for_a_connection"
+
   - id: RF-7
     text: >
       When the developer relies on the written rules, they can trust that the library behaves

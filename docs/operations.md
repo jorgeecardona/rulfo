@@ -60,6 +60,9 @@ Rules:
 15. A requester may stop waiting for a request. It gets no outcome and no more replies, and it
     does not send that id again. Nothing goes on the wire, so the replier may run the request to
     its end.
+16. A requester that sends a copy, when another copy may already have been sent, marks it as
+    sent again. Without a connection it waits for one until the deadline: `unroutable` would say
+    that nothing ran.
 
 ### Replies lost in a reconnect
 
@@ -102,15 +105,31 @@ Limits:
 What a replier that crashed looks like to the requester: no end arrives, and the outcome is
 `expired`.
 
-## Not designed in detail
+## Planned and not planned
 
-These three operations are planned. Their frames, rules and models do not exist yet.
+Only `request` is built. The other rows have no frames, rules or model yet. A rule is written and
+checked in a model before its code.
 
-- Latest value: publish a value under a key. A late subscriber gets the latest value. A delete
-  removes it. Each subscriber chooses what happens when its queue is full: drop or block.
-- Work: offer a task to one worker. The worker acknowledges it. A task with no acknowledgement
-  is offered again, so a task can run twice and must be idempotent.
-- Presence: learn when a peer appears and when it is gone.
+| Need | Covered by | What it states |
+|---|---|---|
+| Request and reply, a query, a batch with an acknowledgement | `request`, built | One of the four outcomes. |
+| The newest value of a key, state pushed to many parties | `latest`, planned next | A subscriber that stays connected ends with the newest version of each key. Versions never go back. Values in between can be skipped. Memory is one value for each key. |
+| Learn that the other side is gone | a link check (PING) and values tied to a connection, planned | "Gone" is reported only after the connection ended, or stayed silent for longer than a limit. |
+| A task for one of several workers (PUSH/PULL) | `work`, waits for a program that needs it | A task is offered until it is acknowledged, so it can run twice. |
+
+The shape that `latest` and the link check keep:
+
+- One wire protocol. Each addition has its own capability bit.
+- One connection between two parties. The side that accepts connections holds the values: there is
+  no broker and no second hop.
+- A slow subscriber gets fewer values in between. There is no queue for each subscriber.
+
+## Not built
+
+- Publish and subscribe for events with no stored value. The only promise would be that an event
+  can be lost.
+- Brokers, proxies, routing between machines and wildcard keys.
+- Compatibility with ZeroMQ or Zenoh.
 
 ## Out of scope
 

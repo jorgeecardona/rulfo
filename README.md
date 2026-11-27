@@ -146,6 +146,10 @@ schema, or a language other than Python. rulfo has none of them.
 - A request stays open across a reconnect. Replies lost in the reconnect are sent again, up to
   a memory limit.
 - Limits with a stated result: a replier at `max_running` refuses with `busy`.
+- Many clients: `rulfo.Server` keeps one `Peer` for each name, and your program accepts the
+  connections.
+- A request that a second process can take over: `request_copy` sends an id and a deadline that you
+  stored.
 - Any ordered byte stream: TCP and unix sockets with `rulfo.StreamTransport`, and a memory
   transport for tests. Two WebSocket adapters to copy are in the
   [Python guide](https://cardona-oss.gitlab.io/rulfo/python/#transports).
@@ -155,10 +159,10 @@ schema, or a language other than Python. rulfo has none of them.
 
 ## Limits
 
-- Only `request` is built. Latest value per key, work with acknowledgement and presence are not
-  designed yet.
-- A `Peer` serves one remote party over one connection. A server keeps one `Peer` for each
-  client.
+- Only `request` is built. The newest value of a key and a check that the other side is gone
+  are planned, and a work queue waits for a program that needs it: see
+  [Operations](https://cardona-oss.gitlab.io/rulfo/operations/#planned-and-not-planned).
+- A `Peer` serves one remote party over one connection. `rulfo.Server` keeps one for each name.
 - rulfo does not encrypt or authenticate. Use a transport that does.
 - The body is bytes. rulfo has no serialization and no schema.
 - A replier that restarts forgets the ids it ran. A request that is still open runs again, and

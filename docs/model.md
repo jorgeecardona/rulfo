@@ -75,6 +75,8 @@ It does not replay:
 
 - A requester that stops waiting (rule 15). It sends nothing, so the repliers behave as in a
   run where it keeps waiting.
+- A second process that sends a copy (rule 16). The model has one requester. A test sends one
+  request from two processes.
 - Two requests at once. The model has one id, so it does not check that a reply goes to the
   right request.
 - A replier that restarts after a crash with an empty store of ids.

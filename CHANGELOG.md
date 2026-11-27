@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-11-27
+
+### Added
+
+- `rulfo.Server`: one `Peer` for each client, found by name; `Request.caller` is that name.
+- `Peer.request_copy` and `Server.request_copy`: send a request with an id and a deadline you
+  chose, so a second process can take it over.
+
+### Changed
+
+- Docs: which messaging needs rulfo covers, plans to cover, and will not build.
+
 ## [0.1.8] - 2026-11-27
 
 ### Changed

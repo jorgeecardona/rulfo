@@ -79,17 +79,38 @@ while True:
 ### One Peer for each remote party
 
 A `Peer` remembers the ids it ran. A second `Peer` for the same party runs a repeated request
-again. A server keeps one for each authenticated name:
+again. A server with several clients uses `rulfo.Server`, which keeps one `Peer` for each name:
 
 ```python
-peers: dict[str, rulfo.Peer] = {}
+async def who(request: rulfo.Request) -> bytes:
+    return request.caller.encode()
 
-if name not in peers:
-    peers[name] = rulfo.Peer(handlers=handlers)
-await peers[name].serve(transport)
+
+server = rulfo.Server(handlers={"who": who})
+
+
+async def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    name = await check_caller(reader)  # your code: who is calling
+    await server.serve(name, rulfo.StreamTransport(reader, writer))
+
+
+await asyncio.start_server(accept, host, port)
 ```
 
-Drop a `Peer` only when `peer.idle` is true and no connection serves it.
+Send a request to one client by its name:
+
+```python
+result = await server.request("worker-1", "resize", body, timeout=5)
+```
+
+- Pass a name that you checked. Whoever gives a name gets its requests.
+- A second connection with the same name replaces the first.
+- `server.connected` lists the names a request can be sent to now. For a name with no connection
+  the outcome is `unroutable`. During the handshake of a connection the call waits.
+- A `Peer` with no connection stays while it has something to remember. It is dropped when the next
+  connection arrives after that.
+- Each name has its own `Peer`: memory and the limits of `Config` count for each one.
+- `await server.aclose()` closes every `Peer`.
 
 ## Transports
 
@@ -133,13 +154,14 @@ class LitestarTransport:
             await self.socket.close()
 
 
+server = rulfo.Server()
+
+
 @websocket("/rulfo/{name:str}")
 async def endpoint(socket: WebSocket, name: str) -> None:
     await socket.accept()
-    # Check who is calling here: one Peer for each authenticated name.
-    if name not in peers:
-        peers[name] = rulfo.Peer()
-    await peers[name].serve(LitestarTransport(socket))
+    # Check here that the caller may use this name.
+    await server.serve(name, LitestarTransport(socket))
 ```
 
 Both sides send binary messages only. A text message or an empty one ends the connection.
@@ -222,9 +244,51 @@ A restarted process forgets the ids it ran. A requester that still waits sends i
 and it runs again. `request.repeat` is true in that case: a handler that must not run twice checks
 its own record when it is true.
 
-Processes that send copies of one request id need one clock (rule 14 in
-[Operations](operations.md)). `Peer(clock=...)` takes it, in milliseconds. `Peer.request` always
-uses a new id, so one process needs nothing.
+### A second process takes over
+
+`Peer.request` makes a new id each time. To let another process finish a request, choose the id and
+the deadline yourself, store them, and send them with `request_copy`:
+
+```python
+request_id = os.urandom(16)
+deadline_ms = clock() + 30_000
+await store(request_id, "resize", body, deadline_ms)  # your code
+result = await peer.request_copy(
+    request_id, "resize", body, deadline_ms=deadline_ms, sent_before=False
+)
+```
+
+The process that takes over passes the same values, with `sent_before=True`:
+
+```python
+result = await peer.request_copy(
+    request_id, "resize", body, deadline_ms=deadline_ms, sent_before=True
+)
+```
+
+A `Server` has the same call with the name first. With `sent_before=True` it also waits for a
+client that has not connected yet:
+
+```python
+result = await server.request_copy(
+    "worker-1", request_id, "resize", body, deadline_ms=deadline_ms, sent_before=True
+)
+```
+
+- The other side runs the request only if it does not know the id. If it knows the id, it sends
+  the stored replies again.
+- With `sent_before=True` the outcome is never `unroutable` or `busy`. Without a connection the
+  call waits. If the other side has no handler or is at a limit, the outcome is `expired` at the
+  deadline.
+- Delete the stored request before you report its outcome. If another process can pick it up at
+  any time, pass `sent_before=True` in the first call too: otherwise the first process can report
+  `unroutable` and the second one still runs the request.
+- All processes must reach the same `Peer` on the other side. A `Server` there needs one name for
+  all of them, and only one of them connected at a time: a second connection with a name replaces
+  the first.
+- All processes need one clock, in milliseconds (rule 14 in [Operations](operations.md)). Pass it
+  as `Peer(clock=...)` or `Server(clock=...)`. The default clock belongs to one machine.
+- Do not send an id again after you cancelled its call.
 
 ## Without asyncio
 

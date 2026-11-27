@@ -43,6 +43,22 @@ _LONGEST_TIMEOUT = 10**9  # seconds
 _LONGEST_WAIT_MS = 1000
 
 
+def check_request(key: str, body: bytes, max_length: int) -> None:
+    """Raises ValueError for a key and body that cannot be sent."""
+    size = len(key.encode())
+    if not 0 < size <= _MAX_KEY or size + len(body) > max_length:
+        msg = f"a key of {size} bytes with a body of {len(body)} cannot be sent"
+        raise ValueError(msg)
+
+
+def timeout_ms(timeout: float) -> int:
+    """``timeout`` in milliseconds. Raises ValueError outside the range."""
+    if not 0 < timeout <= _LONGEST_TIMEOUT:
+        msg = f"timeout must be above 0 and at most {_LONGEST_TIMEOUT} seconds"
+        raise ValueError(msg)
+    return max(1, round(timeout * 1000))
+
+
 def _boot_clock() -> int:
     """Milliseconds that never go back and count the time the machine is suspended."""
     return time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
@@ -79,6 +95,9 @@ class _Pending:
 class Request:
     """A request that a handler runs.
 
+    ``caller`` is the ``name`` of the ``Peer`` it came to: with ``Server``, the name given to
+    ``Server.serve``.
+
     ``repeat`` means that the requester sent it before and this peer does not know the id: a
     process that ran earlier may have run it. A handler that must not run twice across a restart
     checks its own record when ``repeat`` is true.
@@ -89,7 +108,9 @@ class Request:
         event: RequestReceived,
         remaining: Callable[[], float],
         send: Callable[[bytes, bool], Awaitable[None]],
+        caller: str,
     ) -> None:
+        self.caller = caller
         self.id = event.id
         self.key = event.key
         self.body = event.body
@@ -132,6 +153,7 @@ class Peer:
         config: The settings.
         clock: Milliseconds that never go back and count suspended time. Processes that send
             copies of one id need a shared clock (rule 14 in the operations page).
+        name: A name for the remote party. Handlers read it as ``Request.caller``.
     """
 
     def __init__(
@@ -140,7 +162,10 @@ class Peer:
         handlers: Mapping[str, Handler] | None = None,
         config: Config | None = None,
         clock: Callable[[], int] | None = None,
+        name: str = "",
     ) -> None:
+        self.name = name
+        self._calls = 0  # calls of request and request_copy that have not returned
         self._state = PeerState(config)
         self.config = self._state.config
         self._handlers = dict(handlers or {})
@@ -166,7 +191,7 @@ class Peer:
     @property
     def idle(self) -> bool:
         """No open request, running handler or kept id: dropping the ``Peer`` loses nothing."""
-        return self._state.idle and not self._running
+        return self._state.idle and not self._running and not self._calls
 
     async def wait_connected(self) -> None:
         """Returns when a request can be sent. Limit the wait with ``asyncio.timeout``.
@@ -254,43 +279,93 @@ class Peer:
             ValueError: An empty key, or a key and body above the largest length.
             PeerClosed: ``aclose`` was called.
         """
-        size = len(key.encode())
-        if not 0 < size <= _MAX_KEY or size + len(body) > self.config.max_length:
-            msg = f"a key of {size} bytes with a body of {len(body)} cannot be sent"
+        check_request(key, body, self.config.max_length)
+        deadline = self._clock() + timeout_ms(timeout)
+        return await self._call(os.urandom(_ID_SIZE), key, body, deadline, sent_before=False)
+
+    async def request_copy(
+        self,
+        request_id: bytes,
+        key: str,
+        body: bytes = b"",
+        *,
+        deadline_ms: int,
+        sent_before: bool,
+    ) -> Result:
+        """Sends a request whose id and deadline the caller chose, and returns its outcome.
+
+        Use it when more than one process may send the same request, for example when a second
+        process takes over from one that stopped. All of them pass the same id, key, body and
+        deadline, and read the same clock (rule 14 in the operations page).
+
+        With ``sent_before`` false it behaves as ``request``. With ``sent_before`` true another
+        copy may have run, so the outcome is never ``unroutable`` or ``busy``: without a
+        connection the call waits for one. The replier runs the request only if it does not know
+        the id. A replier that cannot take it (no handler for the key, or a limit reached) does
+        not answer, and the call ends ``expired`` at the deadline.
+
+        Do not send an id again after you cancelled its call.
+
+        Args:
+            request_id: 16 random bytes, the same in every copy.
+            key: Which handler runs it.
+            body: The bytes for the handler.
+            deadline_ms: When the request expires, in milliseconds on ``clock``.
+            sent_before: Whether a copy may have been sent already. When in doubt, pass true.
+
+        Raises:
+            ValueError: An id that is not 16 bytes, a deadline too far away, an empty key, or a
+                key and body above the largest length.
+            CallError: This ``Peer`` already waits for this id, or ``sent_before`` is true and
+                the other side does not drop repeated ids.
+            PeerClosed: ``aclose`` was called.
+        """
+        if len(request_id) != _ID_SIZE:
+            msg = f"a request id has {_ID_SIZE} bytes, not {len(request_id)}"
             raise ValueError(msg)
-        if not 0 < timeout <= _LONGEST_TIMEOUT:
-            msg = f"timeout must be above 0 and at most {_LONGEST_TIMEOUT} seconds"
+        check_request(key, body, self.config.max_length)
+        if deadline_ms - self._clock() > _LONGEST_TIMEOUT * 1000:
+            msg = f"the deadline is more than {_LONGEST_TIMEOUT} seconds away"
             raise ValueError(msg)
-        deadline = self._clock() + max(1, round(timeout * 1000))
-        while True:
-            if self._closed:
-                raise PeerClosed
-            now = self._clock()
-            if now >= deadline:
-                return Result(Outcome.EXPIRED, ())
-            if self._link is None:
-                return Result(Outcome.UNROUTABLE, ())
-            if (
-                self._state.ready
-                and self._state.open_requests < self.config.max_requests
-                and self._buffered() <= self.config.send_buffer
-            ):
-                break
-            with contextlib.suppress(TimeoutError):
-                async with asyncio.timeout(min(deadline - now, _LONGEST_WAIT_MS) / 1000):
-                    await self._changed.wait()
-        request_id = os.urandom(_ID_SIZE)
-        self._state.request(request_id, key, body, deadline, now)
-        pending = _Pending(asyncio.get_running_loop().create_future())
-        self._pending[request_id] = pending
-        self._after()
+        return await self._call(request_id, key, body, deadline_ms, sent_before=sent_before)
+
+    async def _call(
+        self, request_id: bytes, key: str, body: bytes, deadline: int, *, sent_before: bool
+    ) -> Result:
+        """Waits until the request can be sent, sends it and waits for its outcome."""
+        self._calls += 1
         try:
-            return await pending.future
+            while True:
+                if self._closed:
+                    raise PeerClosed
+                now = self._clock()
+                if now >= deadline:
+                    return Result(Outcome.EXPIRED, ())
+                if self._link is None and not sent_before:
+                    return Result(Outcome.UNROUTABLE, ())
+                if (
+                    self._link is not None
+                    and self._state.ready
+                    and self._state.open_requests < self.config.max_requests
+                    and self._buffered() <= self.config.send_buffer
+                ):
+                    break
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(min(deadline - now, _LONGEST_WAIT_MS) / 1000):
+                        await self._changed.wait()
+            self._state.request(request_id, key, body, deadline, now, sent_before=sent_before)
+            pending = _Pending(asyncio.get_running_loop().create_future())
+            self._pending[request_id] = pending
+            self._after()
+            try:
+                return await pending.future
+            finally:
+                if self._pending.pop(request_id, None) is not None:  # cancelled
+                    self._state.abandon(request_id)
+                    self._after()
+                    self._notify()
         finally:
-            if self._pending.pop(request_id, None) is not None:  # cancelled
-                self._state.abandon(request_id)
-                self._after()
-                self._notify()
+            self._calls -= 1
 
     async def aclose(self) -> None:
         """Closes the connection, fails the open requests and cancels the handlers.
@@ -466,7 +541,7 @@ class Peer:
             run.replies += 1
             self._after()
 
-        request = Request(event, remaining, send)
+        request = Request(event, remaining, send, self.name)
         limit = asyncio.timeout(remaining())
         try:
             async with limit:
