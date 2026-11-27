@@ -6,7 +6,8 @@ The bytes are in [Wire format](wire-format.md).
 ## request
 
 A requester sends one request to a key. Every replier that handles the key sends zero, one or
-many replies, then an end. The requester always gets exactly one outcome.
+many replies, then an end. The requester gets exactly one outcome, unless it stops waiting
+(rule 15).
 
 | Outcome | When |
 |---|---|
@@ -56,6 +57,9 @@ Rules:
     at most the keep time minus the handshake limit: 55 s with the defaults. The clock does not
     jump. One process with its own monotonic clock meets this rule. Several processes (several
     API replicas, or a restart that keeps open requests) need a clock they share.
+15. A requester may stop waiting for a request. It gets no outcome and no more replies, and it
+    does not send that id again. Nothing goes on the wire, so the replier may run the request to
+    its end.
 
 ### Replies lost in a reconnect
 

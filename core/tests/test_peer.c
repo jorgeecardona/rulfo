@@ -501,6 +501,30 @@ static void test_another_process_sent_the_first_copy(void) {
     close_end(&s.a);
 }
 
+static void test_abandon(void) {
+    scripted s;
+    start(&s, 1);
+    CHECK(rf_abandon(s.a.peer, id_of(1)) == RF_ERR_UNKNOWN_ID);
+    CHECK(ask(&s, 1, 100, 0, 0) == RF_OK);
+    CHECK(rf_abandon(s.a.peer, id_of(1)) == RF_OK);
+    CHECK(rf_abandon(s.a.peer, id_of(1)) == RF_ERR_UNKNOWN_ID);
+    CHECK(rf_next_time(s.a.peer) == UINT64_MAX);
+    /* Nothing arrives for it, and it has no outcome. */
+    answer(&s, RF_REPLY, 0, 1, 0, "one", 1);
+    CHECK(s.event.kind == RF_EV_NONE);
+    answer(&s, RF_END, 0, 1, 1, "", 1);
+    CHECK(s.event.kind == RF_EV_NONE);
+    expect_nothing_due(&s, 100);
+    /* The one slot is free. */
+    CHECK(ask(&s, 2, 300, 0, 100) == RF_OK);
+    /* Without a connection too, and then it is not sent again. */
+    rf_disconnected(s.a.peer);
+    CHECK(rf_abandon(s.a.peer, id_of(2)) == RF_OK);
+    greet(&s, 200, RF_CAP_DROPS_REPEATS);
+    expect_nothing_due(&s, 200);
+    close_end(&s.a);
+}
+
 int main(void) {
     test_config_and_memory();
     test_no_connection();
@@ -519,6 +543,7 @@ int main(void) {
     test_resend_after_a_reconnect();
     test_no_resend_to_a_peer_that_runs_repeats();
     test_another_process_sent_the_first_copy();
+    test_abandon();
     puts("peer: all tests passed");
     return 0;
 }

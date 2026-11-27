@@ -231,7 +231,7 @@ static void connect(world *w) {
 static void call(world *w, source *s) {
     uint8_t header[RF_HEADER_SIZE];
     rf_event event;
-    uint8_t op = (uint8_t)(take(s) % 14);
+    uint8_t op = (uint8_t)(take(s) % 15);
     uint8_t n = (uint8_t)(take(s) % IDS);
     switch (op) {
     case 0:
@@ -324,6 +324,12 @@ static void call(world *w, source *s) {
     case 12:
         (void)rf_reply_again(w->peer, id_of(n), take(s) % 4, take(s) % 80, take(s) % 3, header);
         break;
+    case 13: {
+        rf_status status = rf_abandon(w->peer, id_of(n));
+        REQUIRE((status == RF_OK) == w->open[n]);
+        w->open[n] = false;
+        break;
+    }
     default:
         (void)rf_end_again(w->peer, id_of(n), header);
         (void)rf_next_time(w->peer);

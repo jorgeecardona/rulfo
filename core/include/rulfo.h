@@ -269,6 +269,11 @@ rf_status rf_input(rf_peer *peer, const uint8_t *in, size_t len, uint64_t now, s
 rf_status rf_request(rf_peer *peer, rf_id id, rf_bytes key, size_t body_len, uint64_t deadline,
                      int repeat, uint64_t now, uint8_t header[RF_HEADER_SIZE]);
 
+/* Stops waiting for an open request: its slot is free, and no outcome and no reply is given for
+ * it. Nothing is sent, so the replier may run it to its end, and `id` must not be used again.
+ * Valid with and without a connection. RF_OK, or RF_ERR_UNKNOWN_ID when `id` is not open. */
+rf_status rf_abandon(rf_peer *peer, rf_id id);
+
 /* The replier side. After RF_EV_REQUEST, the caller sends any number of replies and then one
  * end, or refuses. Each call writes a header; the caller sends it, then `body_len` bytes.
  *

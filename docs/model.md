@@ -72,6 +72,8 @@ It does not replay:
 
 ## What it does not prove
 
+- A requester that stops waiting (rule 15). It sends nothing, so the repliers behave as in a
+  run where it keeps waiting.
 - Two requests at once. The model has one id, so it does not check that a reply goes to the
   right request.
 - A replier that restarts after a crash with an empty store of ids.

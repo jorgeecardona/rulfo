@@ -232,6 +232,15 @@ rf_status rf_request(rf_peer *peer, rf_id id, rf_bytes key, size_t body_len, uin
     return RF_OK;
 }
 
+rf_status rf_abandon(rf_peer *peer, rf_id id) {
+    request *r = find_request(peer, &id);
+    if (r == NULL) {
+        return RF_ERR_UNKNOWN_ID;
+    }
+    r->used = false;
+    return RF_OK;
+}
+
 /* Reports the outcome and frees the slot. */
 static void finish(request *r, rf_outcome outcome, rf_event *event) {
     event->kind = RF_EV_OUTCOME;
