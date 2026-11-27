@@ -64,7 +64,8 @@ Rules:
 ### Replies lost in a reconnect
 
 A replier that gets a known id, marked as sent again, tells its program the number of replies sent
-and whether the end was sent. The program stores the replies: rulfo does not.
+and whether the end was sent. The program stores the replies: the C core does not. The
+[Python package](python.md) stores them, up to a limit.
 
 The program chooses one of two:
 

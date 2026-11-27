@@ -1,7 +1,7 @@
 [project]
 name = "rulfo"
 dynamic = ["version"]  # the single source of truth is __version__ in src/rulfo/__init__.py (see [tool.hatch.version])
-description = "Messaging between processes where a request gets zero, one or many replies and always an end. Status: design"
+description = "Messaging between processes where a request gets zero, one or many replies and always an end. Status: early"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -9,8 +9,10 @@ license-files = ["LICENSE"]
 authors = [{ name = "Jorge Cardona", email = "jorgeecardona@gmail.com" }]
 keywords = ["messaging", "request-reply", "ipc"]
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 2 - Pre-Alpha",
+    "Framework :: AsyncIO",
     "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

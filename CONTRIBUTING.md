@@ -21,6 +21,9 @@ result from yours:
 
 ## Development & CI
 
+The package holds C code, so the build needs a C compiler (`cc`). The C tests need cmake, and
+the fuzz targets need clang.
+
 The toolchain is pinned with [proto](https://moonrepo.dev/proto) (`.prototools`: `moon` + `uv`)
 and every CI-graded task is a [moon](https://moonrepo.dev) target running through `uv run`. After
 cloning:
@@ -35,12 +38,14 @@ The dev loop (thin `make` aliases over the moon tasks, so `make` runs exactly wh
 
 ```bash
 make format            # auto-format + autofix lint (ruff, line length 100)
-make check             # the full test stage: lint + typecheck + test
+make check             # the full test stage: lint + typecheck + test + the C tests
+make core-test         # the C core with sanitizers
+make fuzz SECONDS=60   # libFuzzer, SECONDS for each target
 make docs              # build the docs site strictly (as CI / the pages job do)
 ```
 
 CI is a single GitLab job: `proto install` brings up the toolchain, then one `moon run :ci`
-resolves the whole graph (lint, typecheck, test, build, docs, version-guard) — there are no
+resolves the whole graph (lint, typecheck, tests, build, wheel test, docs, version-guard) — there are no
 per-language jobs or hand-wired stages. moon owns task ordering, so run tasks through `make` or
 `moon run`, never by hand-wiring them.
 
@@ -48,7 +53,7 @@ per-language jobs or hand-wired stages. moon owns task ordering, so run tasks th
 
 The version lives as `__version__` in `src/rulfo/__init__.py` — the single source of
 truth, which `pyproject.toml` reads via `[tool.hatch.version]` (its `version` is `dynamic`, so there
-is no second copy to drift). Do not edit it by hand: the pre-commit hook auto-bumps the patch version when anything under `src/` changes,
+is no second copy to drift). Do not edit it by hand: the pre-commit hook auto-bumps the patch version when the shipped source changes (`src/`, `core/src`, `core/include`, `hatch_build.py`),
 and CI's `version-guard` enforces non-bypassably that a `src/` change carries a bump (catching
 `--no-verify` commits and unhooked clones); `version-ahead` additionally enforces that the version
 is strictly greater than `origin/main`. For an intentional minor/major release, bump deliberately:
@@ -58,7 +63,7 @@ is strictly greater than `origin/main`. For an intentional minor/major release, 
 
 Releases are automated — there is no manual tag or publish step:
 
-1. **`pre-commit` auto-bumps** the patch version on any `src/` change (`make install-hooks` once
+1. **`pre-commit` auto-bumps** the patch version on a change of the shipped source (`make install-hooks` once
    after cloning). Doc/test/example/config-only commits don't bump.
 2. **`version-guard`** (part of `:ci`) enforces the same rule in CI.
 3. **`:release`** runs on a green `main` pipeline (after the full `:ci` graph as deps): if the

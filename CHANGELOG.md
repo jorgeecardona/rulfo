@@ -21,3 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Model of request and replies with N repliers, a deadline and faults, in `models/`.
 - `rf_peer` in C: handshake, requests, ordered replies, one outcome, resend after a reconnect,
   a store of ids, busy refusal and sending replies again. A test replays model runs on it.
+- Python package: `Peer` on asyncio with handlers, outcomes and deadlines, `PeerState` without
+  I/O, TCP and unix socket transport, and a memory transport for tests.
+- A wheel for CPython 3.12 and later on Linux x86_64.
+- A requester can stop waiting for a request (`rf_abandon`, a cancelled `request`).

@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
-# rulfo — Messaging between processes where a request gets zero, one or many replies and always an end. Status: design
+# rulfo — Messaging between processes where a request gets zero, one or many replies and always an end.
 # Single project at the repo root. Every task runs as a system command via `uv run`
 # (see .moon/toolchain.yml for why moon's Python toolchain is not used). CI runs one
-# `moon run :ci` (lint, format-check, typecheck, test, test-floor, build, docs,
-# version-guard, version-ahead) -- or `:release` on main; moon owns all task ordering
+# `moon run :ci` (lint, format-check, typecheck, test, test-floor, core-test, binding-asan,
+# build, test-wheel, docs, version-guard, version-ahead) -- or `:release` on main; moon owns all task ordering
 # instead of hand-wired GitLab stages/needs.
 id: 'rulfo'
 layer: 'library'
