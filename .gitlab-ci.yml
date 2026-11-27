@@ -47,12 +47,9 @@ test-python:
     - export PATH="$HOME/.proto/bin:$HOME/.proto/shims:$PATH"
     - sh scripts/test-python "$PYTHON"
 
-# The macOS wheel (arm64 and x86_64), installed and tested on each CPython. A Mac runner costs
-# six times a Linux one, so it runs only when what is in the wheel or its tests changed. A version
-# bump changes src/, so every release has the wheel: scripts/pypi-publish refuses without it.
-wheel-macos:
-  tags: [saas-macos-medium-m1]
-  image: macos-26-xcode-26
+# When the wheel jobs run: when what is in a wheel or its tests changed. A version bump changes
+# src/, so every release has both wheels: scripts/pypi-publish refuses without them.
+.when-a-wheel-changes:
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       changes:
@@ -64,6 +61,13 @@ wheel-macos:
         - pyproject.toml
         - scripts/*
         - .gitlab-ci.yml
+
+# The macOS wheel (arm64 and x86_64), installed and tested on each CPython. A Mac runner costs
+# six times a Linux one.
+wheel-macos:
+  extends: .when-a-wheel-changes
+  tags: [saas-macos-medium-m1]
+  image: macos-26-xcode-26
   script:
     - curl -LsSf https://astral.sh/uv/0.13.1/install.sh | sh
     - export PATH="$HOME/.local/bin:$PATH"
@@ -75,11 +79,31 @@ wheel-macos:
       - dist-macos
     expire_in: 1 day
 
+# The Linux aarch64 wheel, built, installed and tested on each CPython on an arm64 runner (same
+# price as an x86_64 one).
+wheel-linux-arm64:
+  extends: .when-a-wheel-changes
+  tags: [saas-linux-small-arm64]
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gcc libc6-dev
+    - curl -LsSf https://astral.sh/uv/0.13.1/install.sh | sh
+    - export PATH="$HOME/.local/bin:$PATH"
+  script:
+    - sh scripts/build-wheel dist-arm64
+    - sh scripts/test-wheel dist-arm64
+    - sh scripts/test-python
+  artifacts:
+    paths:
+      - dist-arm64
+    expire_in: 1 day
+
 ci:
   extends: .linux-toolchain
   needs:
     - job: test-python
     - job: wheel-macos
+      optional: true
+    - job: wheel-linux-arm64
       optional: true
   # OIDC Trusted Publishing: GitLab mints a short-lived id_token; scripts/pypi-publish
   # exchanges it for a one-shot PyPI token. The `pypi` environment matches the PyPI

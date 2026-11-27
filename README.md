@@ -39,8 +39,8 @@ pip install rulfo      # or: uv add rulfo
 ```
 
 Linux and macOS with CPython 3.12 or later, tested on 3.12 to 3.15. Free-threaded Python is not
-supported. There are wheels for Linux x86_64 and for macOS 11 or later (Apple silicon and Intel).
-Other machines build the package from source, with a C compiler and the Python headers
+supported. There are wheels for Linux x86_64 and aarch64, and for macOS 11 or later (Apple silicon
+and Intel). Other machines build the package from source, with a C compiler and the Python headers
 (`python3-dev` for a Debian system Python).
 
 ## Quickstart

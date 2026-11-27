@@ -45,5 +45,6 @@ CLAUDE.local.md
 /rust/target/
 src/*/*.so
 
-# The macOS wheel, from scripts/build-wheel-macos
+# The wheels of their own CI jobs
 /dist-macos/
+/dist-arm64/

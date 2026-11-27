@@ -11,13 +11,16 @@ if [ -z "${PYPI_ID_TOKEN:-}" ]; then
     exit 1
 fi
 
-# The macOS wheel comes from the wheel-macos job. A version without it is not published.
-set -- dist-macos/rulfo-*-macosx_*.whl
-if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
-    echo "pypi-publish: dist-macos/ has no macOS wheel (did the wheel-macos job run?)" >&2
-    exit 1
-fi
-cp "$1" dist/
+# The macOS and Linux aarch64 wheels come from their own jobs. A version without them is not
+# published.
+for pattern in 'dist-macos/rulfo-*-macosx_*.whl' 'dist-arm64/rulfo-*_aarch64.whl'; do
+    set -- $pattern
+    if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+        echo "pypi-publish: no wheel matches $pattern (did its job run?)" >&2
+        exit 1
+    fi
+    cp "$1" dist/
+done
 
 # Exchange the OIDC id_token for a one-shot PyPI token. Done in Python via `uv run`
 # (the base image may lack a system python3); the token is captured, never echoed.

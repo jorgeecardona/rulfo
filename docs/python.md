@@ -4,7 +4,7 @@ Use `rulfo.Peer` on asyncio to send requests and to answer them over one connect
 behind it are in [Operations](operations.md), and every name is in the [API reference](api.md).
 
 Linux and macOS with CPython 3.12 or later. Free-threaded Python is not supported. There are
-wheels for Linux x86_64 and macOS: other machines build the package from source, with a C compiler.
+wheels for Linux (x86_64 and aarch64) and macOS: other machines build the package from source, with a C compiler.
 
 ## Send a request
 

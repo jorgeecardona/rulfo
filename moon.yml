@@ -6,7 +6,7 @@
 # `moon run :ci` (lint, format-check, typecheck, test, core-test, binding-asan,
 # build, test-wheel, docs, version-guard, version-ahead) -- or `:release` on main; moon owns all task ordering
 # instead of hand-wired GitLab stages/needs. The other jobs of .gitlab-ci.yml run the tests on
-# each CPython (scripts/test-python) and build the macOS wheel.
+# each CPython (scripts/test-python) and build the macOS and Linux aarch64 wheels.
 id: 'rulfo'
 layer: 'library'
 language: 'python'
