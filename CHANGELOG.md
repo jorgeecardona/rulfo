@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-11-27
+
+First release on PyPI.
+
 ### Added
 
-- Project skeleton.
 - Wire format version 1 and the `request` operation, in `docs/`.
 - Outcome `busy` for a refused request; `replied` is now `completed`; 16 capability bits.
 - Deadlines are times on the requester's clock; a new CLOCK frame lets a replier convert them, so

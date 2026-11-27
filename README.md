@@ -3,18 +3,17 @@
 Messaging between processes where a request gets zero, one or many replies and always an end.
 A Python package on a C core, for asyncio.
 
-Status: early. Not on PyPI, and the API can change.
+Status: early. The API can change.
 
 ## Install
 
-From a copy of the repository, with a C compiler and the Python headers (`python3-dev` for a
-Debian system Python):
-
 ```bash
-uv pip install .
+uv add rulfo
 ```
 
-Linux with CPython 3.12 or later. Free-threaded Python is not supported.
+Linux with CPython 3.12 or later. Free-threaded Python is not supported. The wheel is for x86_64.
+Other machines build the package from source, with a C compiler and the Python headers
+(`python3-dev` for a Debian system Python).
 
 ## Quickstart
 
