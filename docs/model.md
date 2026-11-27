@@ -59,16 +59,17 @@ ran the request.
 
 ## The C core
 
-`tests/test_conformance.py` takes 12000 random runs of the model and makes the same calls on the C
-core. After every step the two agree on the outcome, the replies received, the requests given to
-each handler and the replies after the outcome.
+`tests/test_conformance.py` takes 12000 random runs of the model and makes the same calls on
+`PeerState`, the Python layer over the C core. After every step the two agree on the outcome, the
+replies received, the requests given to each handler and the replies after the outcome. Half of
+the runs store replies and send them again, and half store none.
 
 It does not replay:
 
 - a copy read from a closed connection: one `rf_peer` has one connection at a time;
 - a deadline that passes on one side only: the test uses one clock;
-- calls that the model never makes, and frames that arrive in pieces. The C tests and the fuzz
-  targets in `core/` cover these.
+- calls that the model never makes, and frames that arrive in pieces. The C tests, the fuzz
+  targets in `core/` and `tests/test_peer_state*.py` cover these.
 
 ## What it does not prove
 

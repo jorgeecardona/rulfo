@@ -1,10 +1,11 @@
-"""The C core replays runs of the request model, and shows the requester the same things.
+"""``PeerState`` replays runs of the request model on the C core.
 
-Each walk takes random actions of the model and makes the matching calls on the C core. After
-every action the two agree on the outcome, the replies received from each replier, the requests
-given to each handler and the replies delivered after the outcome.
+Each walk takes random actions of the model and makes the matching calls on two ``PeerState``
+objects for each replier. After every action they agree on the outcome, the replies received from
+each replier, the requests given to each handler and the replies delivered after the outcome. Half
+of the walks store replies and send them again, and half store none.
 
-Not replayed, because one clock and one ``rf_peer`` per replier cannot produce them:
+Not replayed, because one clock and one ``PeerState`` per replier cannot produce them:
 
 - a copy read from a closed connection;
 - a deadline that passes on one side only: before ``deadline`` no connection expires and no id
@@ -13,85 +14,80 @@ Not replayed, because one clock and one ``rf_peer`` per replier cannot produce t
 
 from __future__ import annotations
 
-import ctypes
 import random
 from collections import deque
 from dataclasses import dataclass, field
 
 import pytest
 
-from c_core import EVENT, OUTCOME, STATUS, Event, Peer, build
+from links import frames
 from request_reply import Replier, Rules, World, request_model
+from rulfo import Config, Ended, Event, PeerState, Ready, ReplyReceived, RequestReceived
 
 DEADLINE = 1000
 KEEP = 60000
 REQUEST_ID = bytes(range(16))
-KEY = b"op"
-_NAMES = {number: name.removeprefix("RF_").lower() for name, number in OUTCOME.items()}
-
-
-@pytest.fixture(scope="module")
-def library(tmp_path_factory: pytest.TempPathFactory) -> ctypes.CDLL:
-    return build(tmp_path_factory.mktemp("core"))
+KEY = "op"
+BODY = b"ask"
 
 
 @dataclass
 class Pair:
-    """The two ``rf_peer`` objects between the requester and one replier, and what is in flight."""
+    """The two ``PeerState`` between the requester and one replier, and what is in flight."""
 
-    requester: Peer
-    replier: Peer
+    requester: PeerState
+    replier: PeerState
     copies: deque[bytes] = field(default_factory=deque[bytes])
     frames: deque[bytes] = field(default_factory=deque[bytes])
     received: int = 0
-    requests: int = 0  # RF_EV_REQUEST events of the replier
-    refused: int = 0  # calls of rf_refuse
+    requests: int = 0  # RequestReceived events of the replier
+    refused: int = 0  # calls of refuse
     outcome: str | None = None
 
 
 class Run:
-    """The C side of one walk. ``seen`` collects the situations the walk went through."""
+    """The ``PeerState`` side of one walk. ``seen`` collects the situations it went through."""
 
-    def __init__(self, library: ctypes.CDLL, repliers: int, seen: set[str]) -> None:
+    def __init__(self, repliers: int, seen: set[str], *, replay: bool) -> None:
         self.now = 0
         self.outcome: str | None = None
         self.late = 0
         self.seen = seen
-        self.pairs = [Pair(Peer(library, KEEP), Peer(library, KEEP)) for _ in range(repliers)]
+        config = Config(keep=KEEP / 1000, max_ids=4, replay_bytes=1024 if replay else 0)
+        self.pairs = [Pair(PeerState(config), PeerState(config)) for _ in range(repliers)]
         for pair in self.pairs:
-            self._join(pair)
+            assert self._join(pair) == []
 
-    def _join(self, pair: Pair) -> None:
+    def _join(self, pair: Pair) -> list[bytes]:
+        """Connects the pair and returns the copies the requester sends again by itself."""
         peers = (pair.requester, pair.replier)
         for peer in peers:
             peer.connected(self.now)
-        first = [peer.output() for peer in peers]
+        first = [peer.data_to_send() for peer in peers]
         for peer, preface in zip(peers, reversed(first), strict=True):
-            status, used, _ = peer.input(preface, self.now)
-            assert (status, used) == (STATUS["RF_OK"], len(preface))
-        second = [peer.output() for peer in peers]
-        for peer, clock in zip(peers, reversed(second), strict=True):
-            _, used, event = peer.input(clock, self.now)
-            assert (used, event.kind) == (len(clock), EVENT["RF_EV_READY"])
+            assert peer.receive(preface, self.now) == []
+        second = [peer.data_to_send() for peer in peers]
+        assert pair.replier.receive(second[0], self.now) == [Ready()]
+        events = pair.requester.receive(second[1], self.now)
+        assert events[0] == Ready()
+        self._take(pair, events[1:])
+        return frames(pair.requester.data_to_send())
 
-    def _read(self, peer: Peer, frame: bytes) -> Event:
-        status, used, event = peer.input(frame, self.now)
-        assert (status, used) == (STATUS["RF_OK"], len(frame))
-        return event
-
-    def _take(self, pair: Pair, event: Event) -> None:
+    def _take(self, pair: Pair, events: list[Event]) -> None:
         """Count what the requester of ``pair`` was told."""
-        if event.kind == EVENT["RF_EV_REPLY"]:
-            assert event.body == bytes([pair.received])
-            pair.received += 1
-            self.late += self.outcome is not None
-        elif event.kind == EVENT["RF_EV_OUTCOME"]:
-            assert pair.outcome is None
-            pair.outcome = _NAMES[event.outcome]
-            assert event.number == pair.received
+        for event in events:
+            if isinstance(event, ReplyReceived):
+                assert (event.number, event.body) == (pair.received, bytes([pair.received]))
+                pair.received += 1
+                self.late += self.outcome is not None
+            else:
+                assert isinstance(event, Ended)
+                assert pair.outcome is None
+                pair.outcome = event.outcome.value
+                assert event.replies == pair.received
 
     def _combine(self) -> None:
-        """One outcome for all repliers. The core gives one per peer."""
+        """One outcome for all repliers. ``PeerState`` gives one for each."""
         if self.outcome is not None:
             return
         outcomes = [pair.outcome for pair in self.pairs]
@@ -100,32 +96,24 @@ class Run:
         elif all(outcomes):
             self.outcome = "busy" if "busy" in outcomes else "completed"
 
-    def _poll_requester(self, pair: Pair) -> list[Event]:
-        events: list[Event] = []
-        while (event := pair.requester.poll(self.now)).kind != EVENT["RF_EV_NONE"]:
-            self._take(pair, event)
-            events.append(event)
-        return events
-
-    def _send(self, pair: Pair, *, repeat: bool) -> None:
-        status, frame = pair.requester.request(REQUEST_ID, KEY, DEADLINE, self.now, repeat=repeat)
-        assert status == STATUS["RF_OK"]
-        pair.copies.append(frame)
+    def _send(self, pair: Pair) -> None:
+        pair.requester.request(REQUEST_ID, KEY, BODY, DEADLINE, self.now)
+        pair.copies.append(pair.requester.data_to_send())
 
     def apply(self, name: str, before: World, after: World) -> None:
-        """Do on the C core what the model action ``name`` did from ``before`` to ``after``."""
+        """Do on ``PeerState`` what the model action ``name`` did from ``before`` to ``after``."""
         if name == "send":
             for pair in self.pairs:
-                self._send(pair, repeat=False)
+                self._send(pair)
         elif name == "retry":
             self.outcome = None
             for pair in self.pairs:
                 pair.received, pair.outcome = 0, None
-                self._send(pair, repeat=False)
+                self._send(pair)
         elif name == "deadline":
             self.now = max(self.now, DEADLINE)
             for pair in self.pairs:
-                self._poll_requester(pair)
+                self._take(pair, pair.requester.poll(self.now))
                 assert pair.outcome is not None
         else:
             replier, action = name.split("_", 1)
@@ -142,7 +130,7 @@ class Run:
         elif action == "replay":
             self._replay(pair, old.sent, ended=old.phase == "ended")
         elif action == "deliver":
-            self._take(pair, self._read(pair.requester, pair.frames.popleft()))
+            self._take(pair, pair.requester.receive(pair.frames.popleft(), self.now))
         elif action == "disconnect":
             self._reconnect(pair, resend=new.inbox == (True,))
         elif action == "forget":
@@ -156,43 +144,36 @@ class Run:
     def _answer(self, pair: Pair, action: str, old: Replier, new: Replier) -> None:
         """A call of the handler: a reply, the end or a refusal."""
         if action == "reply":
-            status, frame = pair.replier.reply(REQUEST_ID, bytes([old.sent]))
+            pair.replier.reply(REQUEST_ID, bytes([old.sent]))
         elif action == "end":
-            status, frame = pair.replier.end(REQUEST_ID)
+            pair.replier.end(REQUEST_ID)
         else:
             pair.refused += 1
-            status, frame = pair.replier.refuse(REQUEST_ID)
-            if len(new.outbox) == len(old.outbox):
-                assert status == STATUS["RF_DROPPED"]
-                self.seen.add("a refusal that is not sent")
-                return
-        assert status == STATUS["RF_OK"]
-        pair.frames.append(frame)
+            pair.replier.refuse(REQUEST_ID)
+        sent = frames(pair.replier.data_to_send())
+        if action == "refuse" and len(new.outbox) == len(old.outbox):
+            assert sent == []
+            self.seen.add("a refusal that is not sent")
+            return
+        assert len(sent) == 1
+        pair.frames.append(sent[0])
 
     def _receive(self, pair: Pair, old: Replier, new: Replier) -> None:
-        frame = pair.copies.popleft()
+        events = pair.replier.receive(pair.copies.popleft(), self.now)
         marked = old.inbox[0]
-        event = self._read(pair.replier, frame)
         taken = old.phase not in ("taken", "running") and new.phase in ("taken", "running")
         if taken:
-            assert event.kind == EVENT["RF_EV_REQUEST"]
+            assert events == [RequestReceived(REQUEST_ID, KEY, BODY, DEADLINE, repeat=marked)]
             pair.requests += 1
-        elif marked and old.remembers:
-            assert event.kind == EVENT["RF_EV_REPEAT"]
-            assert (event.number, event.ended) == (old.sent, old.phase == "ended")
         else:
-            assert event.kind == EVENT["RF_EV_NONE"]
+            assert events == []
+        assert pair.replier.data_to_send() == b""
 
     def _replay(self, pair: Pair, sent: int, *, ended: bool) -> None:
-        event = self._read(pair.replier, pair.copies.popleft())
-        assert event.kind == EVENT["RF_EV_REPEAT"]
-        assert (event.number, event.ended) == (sent, ended)
-        stored = [pair.replier.reply_again(REQUEST_ID, n, bytes([n])) for n in range(sent)]
-        if ended:
-            stored.append(pair.replier.end_again(REQUEST_ID))
-        for status, frame in stored:
-            assert status == STATUS["RF_OK"]
-            pair.frames.append(frame)
+        assert pair.replier.receive(pair.copies.popleft(), self.now) == []
+        again = frames(pair.replier.data_to_send())
+        assert len(again) == sent + ended
+        pair.frames.extend(again)
         self.seen.add("replies sent again")
 
     def _reconnect(self, pair: Pair, *, resend: bool) -> None:
@@ -200,29 +181,27 @@ class Run:
         pair.replier.disconnected()
         pair.copies.clear()
         pair.frames.clear()
-        self._join(pair)
-        asked = [e for e in self._poll_requester(pair) if e.kind == EVENT["RF_EV_RESEND"]]
-        assert len(asked) == resend
-        if resend:
-            self._send(pair, repeat=True)
+        copies = self._join(pair)
+        assert len(copies) == resend
+        pair.copies.extend(copies)
 
     def _drop_copies(self, pair: Pair) -> None:
-        """Past the deadline the core reads each copy and says nothing."""
+        """Past the deadline each copy is read and nothing happens."""
         while pair.copies:
-            event = self._read(pair.replier, pair.copies.popleft())
-            assert event.kind == EVENT["RF_EV_NONE"]
+            assert pair.replier.receive(pair.copies.popleft(), self.now) == []
+            assert pair.replier.data_to_send() == b""
 
     def _forget(self, pair: Pair) -> None:
         self.now = max(self.now, DEADLINE + KEEP)
-        assert pair.replier.poll(self.now).kind == EVENT["RF_EV_FORGOT"]
-        assert pair.replier.poll(self.now).kind == EVENT["RF_EV_NONE"]
+        assert pair.replier.poll(self.now) == []
+        assert pair.replier.idle
         self._drop_copies(pair)
         self.seen.add("a forgotten id")
 
     def agrees_with(self, s: World) -> None:
         assert self.outcome == s.outcome
         assert [p.received for p in self.pairs] == [st.received for st in s.streams]
-        # Each request the core gave was started, refused, or still waits for that decision.
+        # Each request the handler got was started, refused, or still waits for that decision.
         assert [p.requests - p.refused for p in self.pairs] == [
             r.runs + (r.taken is not None) for r in s.repliers
         ]
@@ -230,28 +209,43 @@ class Run:
             st.ended for st in s.streams
         ]
         assert self.late == s.late
+        # Before the first id can be forgotten, both keep the same ids.
+        if self.now < DEADLINE + KEEP:
+            assert [p.replier.idle for p in self.pairs] == [not r.remembers for r in s.repliers]
 
 
-def _replayable(s: World, name: str) -> bool:
-    """Whether the C core can be driven through the action ``name`` from ``s``."""
+def _replayable(s: World, name: str, *, replay: bool) -> bool:
+    """Whether ``PeerState`` can be driven through the action ``name`` from ``s``."""
     if name.endswith("_old"):
         return False
     if "_expire" in name:
         return s.past_deadline
     if name.endswith("_forget"):
         return s.past_deadline and s.repliers[int(name[1 : name.index("_")])].phase == "ended"
+    if name.endswith("_replay") and not replay:
+        return False
+    if name.endswith("_receive") and replay:
+        # PeerState with stored replies sends them again: it never ignores such a copy.
+        r = s.repliers[int(name[1 : name.index("_")])]
+        if r.inbox[0] and r.remembers and (r.sent > 0 or r.phase == "ended"):
+            return False
     return not (s.past_deadline and name.endswith(("_receive", "_replay")))
 
 
-def _walk(library: ctypes.CDLL, rules: Rules, seed: int, seen: set[str]) -> None:
+def _walk(rules: Rules, seed: int, seen: set[str]) -> None:
     choose = random.Random(seed)  # noqa: S311
     model = request_model(rules)
     assert isinstance(model.init, World)
     state: World = model.init
-    run = Run(library, rules.repliers, seen)
+    replay = seed % 2 == 0
+    run = Run(rules.repliers, seen, replay=replay)
     trace: list[str] = []
     while True:
-        enabled = [a for a in model.actions if a.enabled(state) and _replayable(state, a.name)]
+        enabled = [
+            a
+            for a in model.actions
+            if a.enabled(state) and _replayable(state, a.name, replay=replay)
+        ]
         if not enabled:
             return
         # Faults and the deadline are rarer, so that walks reach the ends of a request.
@@ -296,8 +290,8 @@ ALWAYS = {
     ],
     ids=["one-replier", "more-faults", "two-repliers"],
 )
-def test_the_c_core_replays_the_model(library: ctypes.CDLL, rules: Rules, walks: int) -> None:
+def test_peer_state_replays_the_model(rules: Rules, walks: int) -> None:
     seen: set[str] = set()
     for seed in range(walks):
-        _walk(library, rules, seed, seen)
+        _walk(rules, seed, seen)
     assert seen >= ALWAYS, ALWAYS - seen
