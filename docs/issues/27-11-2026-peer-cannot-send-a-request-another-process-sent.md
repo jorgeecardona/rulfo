@@ -1,8 +1,10 @@
 ---
-title: "Peer cannot send a request that another process sent"
-status: open
+title: Peer cannot send a request that another process sent
+status: done
 area: python
+owner: null
 filed: 2026-11-27
+fixed_in: 57fdedd
 scope: S
 verify: test
 ---
