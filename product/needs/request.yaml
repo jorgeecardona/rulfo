@@ -1,0 +1,75 @@
+who: developer who sends requests between two Python processes
+
+needs:
+
+  - id: RF-1
+    text: >
+      When the developer sends a request, they can learn from one of four outcomes whether it
+      ran, did not run, or that this is unknown.
+    must: true
+    sources:
+      - {kind: secondary, date: 2026-11-27, locator: "README.md#outcomes"}
+    proofs:
+      - "test:tests/test_peer_asyncio.py::test_the_four_outcomes"
+      - "test:tests/test_request_reply_model.py::test_the_design_keeps_every_invariant_and_always_ends"
+
+  - id: RF-2
+    text: >
+      When the developer answers a request, they can send zero, one or many replies that arrive
+      in order.
+    must: true
+    sources:
+      - {kind: secondary, date: 2026-11-27, locator: "README.md#key-features"}
+    proofs:
+      - "test:tests/test_peer_asyncio.py::test_many_replies_arrive_in_order"
+      - "test:tests/test_request_reply_model.py::test_a_request_can_end_completed_with_zero_replies"
+
+  - id: RF-3
+    text: >
+      When the connection drops during a request, the developer can connect again and the request
+      runs once while the other process lives.
+    must: true
+    sources:
+      - {kind: secondary, date: 2026-11-27, locator: "README.md#why-rulfo"}
+    proofs:
+      - "test:tests/test_peer_asyncio.py::test_a_request_survives_a_reconnect_and_runs_once"
+      - "test:tests/test_peer_state.py::test_replies_lost_in_a_reconnect_are_sent_again"
+
+  - id: RF-4
+    text: >
+      When the deadline of a request passes, the developer can get an outcome, and the handler on the
+      other side is cancelled.
+    must: true
+    sources:
+      - {kind: secondary, date: 2026-11-27, locator: "README.md#key-features"}
+    proofs:
+      - "test:tests/test_peer_asyncio.py::test_a_handler_is_cancelled_at_the_deadline"
+
+  - id: RF-5
+    text: >
+      When a replier is at its limit, the developer can get busy and know that the request did not
+      run.
+    must: true
+    sources:
+      - {kind: secondary, date: 2026-11-27, locator: "README.md#key-features"}
+    proofs:
+      - "test:tests/test_peer_asyncio.py::test_requests_above_max_running_are_busy"
+
+  - id: RF-6
+    text: >
+      When the developer starts from the README quickstart, they can run it as written and see
+      the output it shows.
+    must: true
+    sources:
+      - {kind: secondary, date: 2026-11-27, locator: "README.md#quickstart"}
+    proofs:
+      - "test:tests/test_readme.py::test_the_quickstart_runs"
+
+  - id: RF-7
+    text: >
+      When the developer relies on the written rules, they can trust that the library behaves
+      like the model that checks them.
+    sources:
+      - {kind: secondary, date: 2026-11-27, locator: "README.md#key-features"}
+    proofs:
+      - "test:tests/test_conformance.py::test_peer_state_replays_the_model"

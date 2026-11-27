@@ -60,8 +60,13 @@ tasks:
 
   docs:
     command: 'uv run --extra docs mkdocs build --strict'
-    inputs: ['docs/**/*', 'mkdocs.yml', 'src/**/*.py']
+    inputs: ['docs/**/*', 'mkdocs.yml', 'src/**/*.py', 'README.md', 'CHANGELOG.md']
     outputs: ['site']
+
+  # Every need in product/needs names a source and a test that exists.
+  needs:
+    command: 'uv run prodc lint'
+    inputs: ['prodc.toml', 'product/**/*', 'docs/issues/**/*', 'tests/**/*.py', 'README.md']
 
   # CI-side enforcement of "a src/ change carries a version bump" (the non-bypassable
   # counterpart to the pre-commit auto-bump). Reads the diff base from CI env, so it is
@@ -96,6 +101,7 @@ tasks:
       - '~:build'
       - '~:test-wheel'
       - '~:docs'
+      - '~:needs'
       - '~:version-guard'
       - '~:version-ahead'
 

@@ -1,0 +1,9 @@
+# prodc.toml: product needs for rulfo. Run: prodc status
+
+[prodc]
+needs = ["product/needs/*.yaml"]
+issues = ["docs/issues/*.md"]
+
+[proofs.test]
+kind = "pytest"
+root = "."
