@@ -1,6 +1,6 @@
 """Sends one request between two peers of the installed rulfo."""
 
-# ruff: noqa: ASYNC110, INP001, S101, T201 -- a script that scripts/test-wheel runs
+# ruff: noqa: INP001, S101, T201 -- a script that scripts/test-wheel runs
 
 import asyncio
 import sys
@@ -18,8 +18,7 @@ async def main() -> None:
     ends = memory_pair()
     tasks = [asyncio.create_task(client.serve(ends[0])), asyncio.create_task(server.serve(ends[1]))]
     async with asyncio.timeout(5):
-        while not client.connected:
-            await asyncio.sleep(0.001)
+        await client.wait_connected()
         assert (await client.request("echo", b"hello", timeout=2)).one() == b"hello"
         await client.aclose()
         await server.aclose()

@@ -31,6 +31,9 @@ from rulfo._types import (
 _log = logging.getLogger("rulfo")
 
 _ID_SIZE = 16
+# The most one call of Transport.send gets. Some transports refuse large messages: the
+# websockets library closes a connection above 1 MiB.
+_PIECE = 64 * 1024
 _MAX_KEY = 0xFFFF
 # The loop's timers stop while the machine is suspended and the clock of rulfo does not, so no
 # wait is longer than this.
@@ -161,6 +164,17 @@ class Peer:
     def idle(self) -> bool:
         """No open request, running handler or kept id: dropping the ``Peer`` loses nothing."""
         return self._state.idle and not self._running
+
+    async def wait_connected(self) -> None:
+        """Returns when a request can be sent. Limit the wait with ``asyncio.timeout``.
+
+        Raises:
+            PeerClosed: ``aclose`` was called.
+        """
+        while not self.connected:
+            if self._closed:
+                raise PeerClosed
+            await self._changed.wait()
 
     async def serve(self, transport: Transport) -> None:
         """Uses one connection until it ends, and closes it.
@@ -328,10 +342,11 @@ class Peer:
             await link.wake.wait()
             link.wake.clear()
             data = self._state.data_to_send()
-            if data:
-                link.sending = len(data)
-                await link.transport.send(data)
-                link.sending = 0
+            link.sending = len(data)
+            for start in range(0, len(data), _PIECE):
+                piece = data[start : start + _PIECE]
+                await link.transport.send(piece)
+                link.sending -= len(piece)
                 self._notify()
 
     async def _end_link(self) -> None:

@@ -14,7 +14,7 @@ class Transport(Protocol):
     """One connection. The cuts between chunks have no meaning."""
 
     async def send(self, data: bytes) -> None:
-        """Sends all of ``data``. Returns when the transport can take more."""
+        """Sends all of ``data``, at most 64 KiB. Returns when the transport can take more."""
         ...
 
     async def recv(self) -> bytes:

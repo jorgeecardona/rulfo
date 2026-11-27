@@ -81,7 +81,8 @@ class Wire:
         self.ends = memory_pair()
         self.tasks.append(asyncio.create_task(self.client.serve(self.ends[0])))
         self.tasks.append(asyncio.create_task(self.server.serve(self.ends[1])))
-        await until(lambda: self.client.connected and self.server.connected)
+        await self.client.wait_connected()
+        await self.server.wait_connected()
 
     async def disconnect(self) -> None:
         await self.ends[0].close()
@@ -175,6 +176,19 @@ def test_a_handler_that_raises_sends_an_error_reply() -> None:
                 assert result.outcome is Outcome.COMPLETED
                 assert result.replies[-1].error
                 assert result.replies[-1].body.startswith(start)
+
+    run(test)
+
+
+def test_waiting_for_a_connection_ends_when_the_peer_closes() -> None:
+    async def test() -> None:
+        peer = Peer()
+        waiting = asyncio.create_task(peer.wait_connected())
+        await asyncio.sleep(0.01)
+        assert not waiting.done()
+        await peer.aclose()
+        with pytest.raises(PeerClosed):
+            await waiting
 
     run(test)
 
@@ -391,6 +405,32 @@ def test_reply_waits_while_the_connection_is_slow() -> None:
         assert 0 < len(sent) < 5
         slow.open.set()
         assert len((await asking).replies) == 10
+        await client.aclose()
+        await server.aclose()
+        await asyncio.gather(*tasks)
+
+    run(test)
+
+
+def test_the_transport_gets_pieces_of_at_most_64_kib() -> None:
+    sizes: list[int] = []
+
+    class Counting(Stuck):
+        async def send(self, data: bytes) -> None:
+            sizes.append(len(data))
+            await super().send(data)
+
+    async def test() -> None:
+        client, server = Peer(), Peer(handlers={"echo": echo})
+        ends = memory_pair()
+        tasks = [
+            asyncio.create_task(client.serve(Counting(ends[0]))),
+            asyncio.create_task(server.serve(Counting(ends[1]))),
+        ]
+        await client.wait_connected()
+        body = bytes(1_000_000)
+        assert (await client.request("echo", body, timeout=5)).one() == body
+        assert max(sizes) == 64 * 1024
         await client.aclose()
         await server.aclose()
         await asyncio.gather(*tasks)
