@@ -63,6 +63,11 @@ def _id(request_id: bytes) -> _CData:
     return ffi.new("rf_id *", {"bytes": request_id})
 
 
+def _copy(body: bytes) -> bytes:
+    """``body`` as bytes that nothing else can change. An int or a str raises ``TypeError``."""
+    return bytes(memoryview(body))
+
+
 def _bytes(data: _CData) -> bytes:
     """A copy of an ``rf_bytes``."""
     return bytes(ffi.buffer(data.ptr, data.len)) if data.len else b""
@@ -148,6 +153,13 @@ class PeerState:
     def unsent(self) -> int:
         """Bytes that ``data_to_send`` would return."""
         return len(self._out)
+
+    @property
+    def open_bytes(self) -> int:
+        """Bytes of the keys and bodies kept to send open requests again, with their headers."""
+        return sum(
+            lib.RF_HEADER_SIZE + len(kept.key) + len(kept.body) for kept in self._open.values()
+        )
 
     @property
     def stored_bytes(self) -> int:
@@ -251,7 +263,7 @@ class PeerState:
         """
         if request_id in self._open:
             raise CallError(_STATUS[lib.RF_ERR_STATE])
-        kept = _Open(key.encode(), bytes(body), deadline)
+        kept = _Open(key.encode(), _copy(body), deadline)
         status = self._send_request(request_id, kept, now, repeat=sent_before)
         if status != lib.RF_OK:
             raise _fail(status)
@@ -273,7 +285,7 @@ class PeerState:
             CallError: The id is not known, or the request has ended.
         """
         ident = _id(request_id)
-        kept = bytes(body)
+        kept = _copy(body)
         flags = lib.RF_REPLY_ERROR if error else 0
         status = self._write(
             lambda header: lib.rf_reply(self._peer, ident[0], len(kept), flags, header), kept
@@ -407,8 +419,6 @@ class PeerState:
     def _take(self, request_id: bytes, deadline: int) -> None:
         storing = self.config.replay_bytes > 0
         self._taken[request_id] = _Taken(deadline, [] if storing else None)
-        if storing:
-            heapq.heappush(self._free_at, (deadline, request_id))
 
     def _store(self, request_id: bytes, flags: int, body: bytes) -> None:
         taken = self._taken[request_id]
@@ -422,6 +432,8 @@ class PeerState:
             # A replay starts at reply 0, so a part of the replies is of no use.
             self._unstore(taken)
             return
+        if not taken.replies:  # the first stored reply: there is something to free later
+            heapq.heappush(self._free_at, (taken.deadline, request_id))
         taken.replies.append((flags, body))
         taken.size += cost
         self._stored += cost

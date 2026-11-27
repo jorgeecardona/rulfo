@@ -43,7 +43,7 @@ tasks:
   build:
     command: 'sh scripts/build-wheel'
     deps: ['~:test']
-    inputs: ['scripts/build-wheel', 'src/**/*.py*', 'core/**/*', 'hatch_build.py', 'pyproject.toml', 'README.md', 'CHANGELOG.md', 'LICENSE']
+    inputs: ['scripts/*', 'src/**/*.py*', 'core/**/*', 'models/**/*.py', 'tests/**/*.py', 'hatch_build.py', 'pyproject.toml', 'README.md', 'CHANGELOG.md', 'LICENSE']
 
     outputs: ['dist']
 

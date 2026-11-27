@@ -12,6 +12,7 @@ from rulfo._types import (
     Event,
     NotCompleted,
     Outcome,
+    Overloaded,
     PeerClosed,
     ProtocolError,
     Ready,
@@ -23,7 +24,7 @@ from rulfo._types import (
     RulfoError,
 )
 
-__version__ = "0.1.6"  # the single source of truth; pyproject reads it via [tool.hatch.version]
+__version__ = "0.1.7"  # the single source of truth; pyproject reads it via [tool.hatch.version]
 
 __all__ = [
     "Busy",
@@ -35,6 +36,7 @@ __all__ = [
     "Handler",
     "NotCompleted",
     "Outcome",
+    "Overloaded",
     "Peer",
     "PeerClosed",
     "PeerState",

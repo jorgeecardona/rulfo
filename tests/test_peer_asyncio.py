@@ -15,6 +15,7 @@ from rulfo import (
     Config,
     Handler,
     Outcome,
+    Overloaded,
     Peer,
     PeerClosed,
     ProtocolError,
@@ -475,14 +476,188 @@ def test_an_error_of_the_transport_leaves_serve() -> None:
     run(test)
 
 
+class SlowToCancel(Stuck):
+    """A transport whose ``recv`` needs a moment to stop."""
+
+    async def recv(self) -> bytes:
+        try:
+            return await self.inner.recv()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.05)
+            raise
+
+
+def test_cancelling_serve_twice_leaves_the_peer_usable() -> None:
+    async def test() -> None:
+        peer = Peer()
+        first = asyncio.create_task(peer.serve(SlowToCancel(memory_pair()[0])))
+        await asyncio.sleep(0.01)
+        first.cancel()
+        await asyncio.sleep(0.01)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        ends = memory_pair()
+        server = Peer(handlers={"echo": echo})
+        tasks = [
+            asyncio.create_task(peer.serve(ends[0])),
+            asyncio.create_task(server.serve(ends[1])),
+        ]
+        await peer.wait_connected()
+        assert (await peer.request("echo", b"x", timeout=5)).one() == b"x"
+        await peer.aclose()
+        await server.aclose()
+        await asyncio.gather(*tasks)
+
+    run(test)
+
+
+def test_serve_cancelled_while_it_waits_closes_its_transport() -> None:
+    async def test() -> None:
+        peer = Peer()
+        first = asyncio.create_task(peer.serve(SlowToCancel(memory_pair()[0])))
+        await asyncio.sleep(0.01)
+        ends = memory_pair()
+        second = asyncio.create_task(peer.serve(ends[0]))
+        await asyncio.sleep(0)  # it waits for the first to stop
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        assert await ends[1].recv() == b""
+        await peer.aclose()
+        await first
+
+    run(test)
+
+
+def test_a_cancelled_close_still_fails_the_requests_and_cancels_the_handlers() -> None:
+    async def test() -> None:
+        gate = Gate()
+        client, server = Peer(), Peer(handlers={"gate": gate})
+        ends = memory_pair()
+        tasks = [
+            asyncio.create_task(client.serve(SlowToCancel(ends[0]))),
+            asyncio.create_task(server.serve(SlowToCancel(ends[1]))),
+        ]
+        await client.wait_connected()
+        asking = asyncio.create_task(client.request("gate", timeout=5))
+        await until(lambda: len(gate.started) == 1)
+        for peer in (client, server):
+            closing = asyncio.create_task(peer.aclose())
+            await asyncio.sleep(0)
+            closing.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+        with pytest.raises(PeerClosed):
+            await asking
+        await until(lambda: gate.cancelled)
+        await asyncio.gather(*tasks)
+
+    run(test)
+
+
+def test_a_side_that_stops_reading_ends_the_connection() -> None:
+    async def test() -> None:
+        client = Peer()
+        server = Peer(config=Config(send_buffer=100, replay_bytes=0, max_length=100))
+        ends = memory_pair()
+        slow = Stuck(ends[1])
+        serving = asyncio.create_task(server.serve(slow))
+        asking_side = asyncio.create_task(client.serve(ends[0]))
+        await client.wait_connected()
+        await server.wait_connected()
+        slow.open.clear()  # the server's refusals pile up
+        requests = [asyncio.create_task(client.request("none", timeout=5)) for _ in range(40)]
+        with pytest.raises(Overloaded):
+            await serving
+        await client.aclose()
+        await server.aclose()
+        await asyncio.gather(*requests, return_exceptions=True)
+        await asking_side
+
+    run(test)
+
+
+def test_large_open_requests_are_sent_again_without_overload() -> None:
+    async def test() -> None:
+        gate = Gate()
+        config = Config(send_buffer=100, replay_bytes=0, max_length=2000)
+        async with wired({"gate": gate}, client=config) as wire:
+            requests = [
+                asyncio.create_task(wire.client.request("gate", bytes(1900), timeout=5))
+                for _ in range(20)
+            ]
+            await until(lambda: len(gate.started) == 20)
+            await wire.disconnect()
+            await wire.connect()
+            await asyncio.sleep(0.05)
+            assert wire.client.connected
+            for request in requests:
+                request.cancel()
+            await asyncio.gather(*requests, return_exceptions=True)
+            gate.open.set()
+
+    run(test)
+
+
+def test_a_handler_can_close_its_peer() -> None:
+    async def test() -> None:
+        async def stop(request: Request) -> None:
+            await wire.server.aclose()
+
+        wire = Wire({"stop": stop})
+        await wire.connect()
+        asking = asyncio.create_task(wire.client.request("stop", timeout=0.2))
+        assert (await asking).outcome is Outcome.EXPIRED
+        await until(lambda: not wire.server.running)
+        await wire.client.aclose()
+        await asyncio.gather(*wire.tasks, return_exceptions=True)
+
+    run(test)
+
+
+def test_an_error_while_sending_leaves_serve() -> None:
+    class Broken(Stuck):
+        async def send(self, data: bytes) -> None:
+            raise ConnectionResetError
+
+    async def test() -> None:
+        peer = Peer()
+        with pytest.raises(ConnectionResetError):
+            await peer.serve(Broken(memory_pair()[0]))
+        await peer.aclose()
+
+    run(test)
+
+
+def test_a_handler_that_returns_something_else_sends_an_error() -> None:
+    async def number(request: Request) -> bytes:
+        return 5  # pyright: ignore[reportReturnType]
+
+    async def test() -> None:
+        async with wired({"number": number}) as wire:
+            result = await wire.client.request("number", timeout=5)
+            assert [r.error for r in result.replies] == [True]
+            assert result.replies[0].body.startswith(b"TypeError")
+
+    run(test)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), 1e12])
+def test_a_timeout_out_of_range(timeout: float) -> None:
+    async def test() -> None:
+        with pytest.raises(ValueError, match="timeout"):
+            await Peer().request("k", timeout=timeout)
+
+    run(test)
+
+
 @pytest.mark.parametrize(("key", "size"), [("", 0), ("k", 100), ("k" * 70000, 0)])
 def test_a_request_that_cannot_be_sent(key: str, size: int) -> None:
     async def test() -> None:
         peer = Peer(config=Config(max_length=100))
         with pytest.raises(ValueError, match="cannot be sent"):
             await peer.request(key, bytes(size), timeout=5)
-        with pytest.raises(ValueError, match="timeout"):
-            await peer.request("k", timeout=0)
 
     run(test)
 

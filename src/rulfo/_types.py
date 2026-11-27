@@ -110,6 +110,10 @@ class PeerClosed(RulfoError):  # noqa: N818
     """The peer was closed."""
 
 
+class Overloaded(RulfoError):  # noqa: N818
+    """The other side takes too little of what is sent to it: the connection was ended."""
+
+
 class ProtocolError(RulfoError):
     """The other side broke the wire format. ``status`` is the name of the core status."""
 

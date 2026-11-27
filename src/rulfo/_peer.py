@@ -19,6 +19,7 @@ from rulfo._types import (
     Ended,
     Event,
     Outcome,
+    Overloaded,
     PeerClosed,
     ProtocolError,
     Ready,
@@ -26,6 +27,7 @@ from rulfo._types import (
     ReplyReceived,
     RequestReceived,
     Result,
+    RulfoError,
 )
 
 _log = logging.getLogger("rulfo")
@@ -35,6 +37,7 @@ _ID_SIZE = 16
 # websockets library closes a connection above 1 MiB.
 _PIECE = 64 * 1024
 _MAX_KEY = 0xFFFF
+_LONGEST_TIMEOUT = 10**9  # seconds
 # The loop's timers stop while the machine is suspended and the clock of rulfo does not, so no
 # wait is longer than this.
 _LONGEST_WAIT_MS = 1000
@@ -54,7 +57,7 @@ class _Link:
     stop: asyncio.Event = field(default_factory=asyncio.Event)  # end this connection
     done: asyncio.Event = field(default_factory=asyncio.Event)  # nothing more is read from it
     sending: int = 0  # bytes given to the transport and not yet sent
-    error: ProtocolError | None = None
+    error: RulfoError | None = None  # why this side ends the connection
 
 
 @dataclass
@@ -183,19 +186,17 @@ class Peer:
         when to connect again.
 
         Raises:
-            PeerClosed: ``aclose`` was called.
+            PeerClosed: ``serve`` was called after ``aclose``. A call that runs when ``aclose``
+                is called returns.
             ProtocolError: The other side broke the wire format, or the handshake took too long.
+            Overloaded: The other side takes too little of what this side sends.
             Exception: What ``transport`` raises.
         """
-        async with self._replace:
-            await self._end_link()
-            if self._closed:
-                await transport.close()
-                raise PeerClosed
-            link = _Link(transport)
-            self._link = link
-            self._state.connected(self._clock())
-            self._after()
+        try:
+            link = await self._start_link(transport)
+        except BaseException:
+            await transport.close()
+            raise
         tasks: list[asyncio.Task[object]] = [
             asyncio.create_task(self._read(link)),
             asyncio.create_task(self._write(link)),
@@ -211,10 +212,25 @@ class Peer:
         finally:
             for task in tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Before the first await: a second cancel must not leave the connection in place.
             self._drop(link)
             link.done.set()
-            await transport.close()
+            try:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                await transport.close()
+
+    async def _start_link(self, transport: Transport) -> _Link:
+        """Ends the connection in place, and starts one on ``transport``."""
+        async with self._replace:
+            await self._end_link()
+            if self._closed:
+                raise PeerClosed
+            link = _Link(transport)
+            self._link = link
+            self._state.connected(self._clock())
+            self._after()
+        return link
 
     async def request(
         self,
@@ -242,8 +258,8 @@ class Peer:
         if not 0 < size <= _MAX_KEY or size + len(body) > self.config.max_length:
             msg = f"a key of {size} bytes with a body of {len(body)} cannot be sent"
             raise ValueError(msg)
-        if not timeout > 0:
-            msg = "timeout must be above 0"
+        if not 0 < timeout <= _LONGEST_TIMEOUT:
+            msg = f"timeout must be above 0 and at most {_LONGEST_TIMEOUT} seconds"
             raise ValueError(msg)
         deadline = self._clock() + max(1, round(timeout * 1000))
         while True:
@@ -277,11 +293,17 @@ class Peer:
                 self._notify()
 
     async def aclose(self) -> None:
-        """Closes the connection, fails the open requests and cancels the handlers."""
+        """Closes the connection, fails the open requests and cancels the handlers.
+
+        Bytes that are not sent yet are dropped, also the end of a handler that just returned.
+        """
+        # Everything is done before the first await, so a cancelled call leaves nothing waiting.
         self._closed = True
-        # The connection goes first: a cancelled handler must not send an end.
-        async with self._replace:
-            await self._end_link()
+        link = self._link
+        if link is not None:
+            # The connection goes first: a cancelled handler must not send an end.
+            link.stop.set()
+            self._drop(link)
         pending, self._pending = self._pending, {}
         for request_id, waiting in pending.items():
             self._state.abandon(request_id)
@@ -290,9 +312,11 @@ class Peer:
         handlers = [task for task in self._running if task is not asyncio.current_task()]
         for task in handlers:
             task.cancel()
-        await asyncio.gather(*handlers, return_exceptions=True)
         self._arm()
         self._notify()
+        if link is not None:
+            await link.done.wait()
+        await asyncio.gather(*handlers, return_exceptions=True)
 
     def _buffered(self) -> int:
         return self._state.unsent + (self._link.sending if self._link else 0)
@@ -306,10 +330,30 @@ class Peer:
         changed, self._changed = self._changed, asyncio.Event()
         changed.set()
 
+    def _unsent_limit(self) -> int:
+        """More unsent bytes than this end the connection.
+
+        ``request`` and ``reply`` wait far below it. The refusals, the requests sent again and
+        the replies sent again do not wait: a request sent again and the stored replies are
+        counted here, and refusals reach the limit only when the other side stops reading.
+        """
+        config = self.config
+        return (
+            4 * config.send_buffer
+            + config.max_length
+            + config.replay_bytes
+            + self._state.open_bytes
+        )
+
     def _after(self) -> None:
         """Runs after every call of the state: bytes may wait and the next time may differ."""
-        if self._link is not None and self._state.unsent:
-            self._link.wake.set()
+        link = self._link
+        if link is not None and not link.stop.is_set():
+            if self._buffered() > self._unsent_limit():
+                link.error = Overloaded("the other side does not take what is sent to it")
+                link.stop.set()
+            elif self._state.unsent:
+                link.wake.set()
         self._arm()
 
     def _arm(self) -> None:
@@ -325,13 +369,15 @@ class Peer:
 
     def _on_timer(self) -> None:
         self._timer = None
-        self._dispatch(self._state.poll(self._clock()))
-        self._after()
+        try:
+            self._dispatch(self._state.poll(self._clock()))
+        finally:
+            self._after()  # or no deadline is looked at again
 
     async def _read(self, link: _Link) -> None:
         while not link.stop.is_set():
             data = await link.transport.recv()
-            if not data:
+            if not data or link is not self._link:
                 return
             self._dispatch(self._state.receive(data, self._clock()))
             self._after()
@@ -341,6 +387,8 @@ class Peer:
         while True:
             await link.wake.wait()
             link.wake.clear()
+            if link is not self._link:
+                return
             data = self._state.data_to_send()
             link.sending = len(data)
             for start in range(0, len(data), _PIECE):

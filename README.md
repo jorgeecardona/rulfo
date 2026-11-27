@@ -7,7 +7,8 @@ Status: early. Not on PyPI, and the API can change.
 
 ## Install
 
-From a copy of the repository, with a C compiler:
+From a copy of the repository, with a C compiler and the Python headers (`python3-dev` for a
+Debian system Python):
 
 ```bash
 uv pip install .

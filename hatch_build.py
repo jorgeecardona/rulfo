@@ -72,7 +72,9 @@ def compile_core(out: Path, *, sanitize: bool = False) -> Path:
     command = [*compiler, "-shared", "-fPIC", "-O2", "-std=c11", "-fvisibility=hidden"]
     command += SANITIZERS if sanitize else []
     command += [f"-I{CORE / 'include'}", f"-I{sysconfig.get_paths()['include']}"]
-    with tempfile.TemporaryDirectory(dir=out) as scratch:
+    # Outside src/, which the sdist ships, and on the same file system for the rename.
+    (ROOT / "build").mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=ROOT / "build") as scratch:
         generated = Path(scratch) / "_core.c"
         builder.emit_c_code(str(generated))
         command += [str(generated), *sorted(str(path) for path in (CORE / "src").glob("*.c"))]

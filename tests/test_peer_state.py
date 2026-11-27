@@ -275,6 +275,18 @@ def test_a_body_above_the_largest_length_is_refused() -> None:
     assert link.replier.stored_bytes == 0
 
 
+def test_refused_requests_leave_nothing_to_free() -> None:
+    link = Link()
+    link.connect()
+    for n in range(100):
+        link.requester.request(bytes([n]) * 16, "op", b"", 1000, 0)
+        link.pump()
+        link.replier.refuse(bytes([n]) * 16)
+        link.pump()
+    assert link.replier.idle
+    assert link.replier.next_time() is None
+
+
 @pytest.mark.parametrize(
     "config",
     [Config(keep=1.0), Config(handshake=0), Config(max_ids=-1), Config(replay_bytes=-1)],
