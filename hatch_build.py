@@ -62,7 +62,9 @@ def compile_core(out: Path, *, sanitize: bool = False) -> Path:
 
     builder = FFI()
     builder.cdef(declarations((CORE / "include" / "rulfo.h").read_text()))
-    builder.set_source("rulfo._core", '#include "rulfo.h"')
+    # PeerState allocates rf_peer with malloc, which gives the alignment the core asks for.
+    builder.cdef("void *malloc(size_t size); void free(void *pointer);")
+    builder.set_source("rulfo._core", '#include <stdlib.h>\n#include "rulfo.h"')
     generated = ROOT / "build" / "ffi" / "_core.c"
     generated.parent.mkdir(parents=True, exist_ok=True)
     builder.emit_c_code(str(generated))
