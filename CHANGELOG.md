@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-11-27
+
+### Changed
+
+- README: overview, outcomes, comparison with HTTP and ZeroMQ, and limits.
+
 ## [0.1.7] - 2026-11-27
 
 First release on PyPI.
