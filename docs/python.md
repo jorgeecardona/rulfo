@@ -197,6 +197,92 @@ async for socket in connect(url):
     await peer.serve(WebsocketsTransport(socket))
 ```
 
+### Shared websocket
+
+A websocket that already carries text frames (for example, a JSON protocol) can also carry rulfo
+binary frames. The key constraint: one reader must receive every frame from the socket — including
+text frames — and route binary frames to rulfo through a queue. `serve` runs as a concurrent task
+while the reader loop continues.
+
+Do not call `socket.recv()` from inside `recv()`. `recv(decode=False)` on the websockets library
+returns text frames as bytes too, so a JSON frame would be fed into rulfo and break the connection.
+And if you call `socket.recv()` only inside `serve`, the outer read loop stalls while `serve` holds
+the socket.
+
+```python
+import asyncio
+import contextlib
+import json
+
+from websockets.asyncio.client import ClientConnection, connect
+
+
+class SharedTransport:
+    """Transport over binary frames of a shared websocket.
+
+    ``close()`` ends this transport without closing the socket. Binary frames arrive
+    through ``feed()``, called by the reader loop. Text frames never reach this
+    transport. ``serve`` must run as a task alongside the reader loop, not instead of
+    it.
+    """
+
+    def __init__(self, socket: ClientConnection) -> None:
+        self._socket = socket
+        self._queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._closed: asyncio.Event = asyncio.Event()
+
+    def feed(self, data: bytes) -> None:
+        """Put one binary frame on the queue. Called by the reader loop."""
+        self._queue.put_nowait(data)
+
+    async def send(self, data: bytes) -> None:
+        if not self._closed.is_set():
+            with contextlib.suppress(Exception):
+                await self._socket.send(data)
+
+    async def recv(self) -> bytes:
+        get_task = asyncio.create_task(self._queue.get())
+        close_task = asyncio.create_task(self._closed.wait())
+        done, pending = await asyncio.wait(
+            {get_task, close_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        for t in pending:
+            t.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
+        if close_task in done:
+            return b""  # transport closed; leave the socket open
+        return get_task.result()
+
+    async def close(self) -> None:
+        """End this transport. The socket is not closed."""
+        self._closed.set()
+```
+
+One reader loop receives every frame and routes it. `serve` runs as a task beside it:
+
+```python
+async for socket in connect(url):
+    transport: SharedTransport | None = None
+    serve_task: asyncio.Task[None] | None = None
+    try:
+        async for message in socket:
+            if isinstance(message, bytes):
+                if transport is not None:
+                    transport.feed(message)
+            else:
+                frame = json.loads(message)
+                if frame.get("type") == "rulfo" and frame.get("v") == 1:
+                    transport = SharedTransport(socket)
+                    serve_task = asyncio.create_task(peer.serve(transport))
+                # other text frames handled here
+    finally:
+        if transport is not None:
+            await transport.close()
+        if serve_task is not None:
+            await serve_task
+```
+
 ## Cancel
 
 - Cancelling the task that awaits `request` stops the wait. Nothing is sent: the handler on the
