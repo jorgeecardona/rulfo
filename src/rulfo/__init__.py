@@ -25,7 +25,7 @@ from rulfo._types import (
     RulfoError,
 )
 
-__version__ = "0.1.13"  # the single source of truth; pyproject reads it via [tool.hatch.version]
+__version__ = "0.1.14"  # the single source of truth; pyproject reads it via [tool.hatch.version]
 
 __all__ = [
     "Busy",

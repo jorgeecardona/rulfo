@@ -3,9 +3,9 @@
 Run a server and a client as two processes over TCP. Then stop the server during a request and
 see what the client gets.
 
-You need the two files below from the
-[`examples/`](https://gitlab.com/cardona-oss/rulfo/-/tree/main/examples) folder of the
-repository, and `pip install rulfo`.
+You need `pip install rulfo` and two files. The package does not contain them. Make a folder
+named `examples/` and save the two files below in it, or clone the
+[repository](https://gitlab.com/cardona-oss/rulfo/-/tree/main/examples).
 
 ## The server
 
@@ -63,7 +63,8 @@ Both programs take another port as their first argument: `python examples/server
 
 ## Stop the server during a request
 
-`examples/slow_client.py` sends one request to the key `slow`. The handler takes 3 seconds and
+[`examples/slow_client.py`](https://gitlab.com/cardona-oss/rulfo/-/blob/main/examples/slow_client.py)
+sends one request to the key `slow`. The handler takes 3 seconds and
 the deadline is 10 seconds. The file is `client.py` with another request:
 
 ```python

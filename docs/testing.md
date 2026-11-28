@@ -8,7 +8,8 @@ No socket, no port, and no pytest plugin for asyncio.
 `rulfo.testing.memory_pair()` returns two transports that are connected to each other. Give
 one to each `Peer`. Closing one ends both.
 
-`examples/test_add.py` tests a handler named `add`. Copy `connected` into your tests:
+`examples/test_add.py` tests a handler named `add`. The package does not contain it: save the
+code below as `examples/test_add.py`. Copy `connected` into your tests:
 
 ```python
 --8<-- "examples/test_add.py"

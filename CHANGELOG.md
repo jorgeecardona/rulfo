@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Server.aclose` closes every connection and cancels every handler before it waits. A handler
   that was slow to stop kept the other clients connected.
 
+### Changed
+
+- API reference: the fields of `Result` and `Reply` are listed.
+- Docs say when to use `Peer` and when `Server`, and that the package does not contain the
+  example files.
+
 ## [0.1.12] - 2026-11-28
 
 ### Added

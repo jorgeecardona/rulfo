@@ -60,8 +60,11 @@ class Reply:
     """One reply. ``error`` marks a reply that reports a failure of the handler."""
 
     number: int
+    """The place of the reply in the replies of the request, from 0."""
     body: bytes
+    """What the handler sent. For an error reply, the text of the failure."""
     error: bool
+    """Whether the reply reports that the handler failed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +72,9 @@ class Result:
     """The outcome of a request and the replies that arrived."""
 
     outcome: Outcome
+    """How the request ended."""
     replies: tuple[Reply, ...]
+    """The replies that arrived, in order. Not complete unless ``outcome`` is ``completed``."""
 
     def one(self) -> bytes:
         """The body of the only reply of a completed request.

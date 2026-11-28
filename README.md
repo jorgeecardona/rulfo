@@ -49,6 +49,9 @@ and Intel). Other machines build the package from source, with a C compiler and 
 One process here plays both sides: a server with two handlers and a client that sends three
 requests over TCP.
 
+Use `rulfo.Peer` for one remote party, as here. A process with several named clients uses
+[`rulfo.Server`](https://cardona-oss.gitlab.io/rulfo/server/), which keeps one `Peer` for each.
+
 ```python
 import asyncio
 
