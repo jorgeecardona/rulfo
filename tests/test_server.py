@@ -143,6 +143,66 @@ def test_an_idle_party_without_a_connection_is_dropped_at_the_next_connection() 
     run(test)
 
 
+def test_a_handler_that_is_slow_to_stop_delays_no_other_party() -> None:
+    async def test() -> None:
+        stopping, stop = asyncio.Event(), asyncio.Event()
+
+        async def slow_to_stop(_: Request) -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                stopping.set()
+                await stop.wait()
+                raise
+
+        gate = Gate()
+        server = Server(handlers={"slow": slow_to_stop, "gate": gate})
+        async with network(server) as net:
+            first = net.peer(Peer())
+            await net.join(server, "a", first)
+            # Deadlines past the limit of the test: only aclose can cancel the handlers.
+            slow = asyncio.create_task(first.request("slow", timeout=30))
+            second = net.peer(Peer())
+            end = await net.join(server, "b", second)
+            held = asyncio.create_task(second.request("gate", timeout=30))
+            await until(lambda: len(gate.started) == 1)
+            closing = asyncio.create_task(server.aclose())
+            await stopping.wait()
+            # The handler of "a" has not stopped yet, and "b" is closed already.
+            await until(lambda: gate.cancelled and end.served.done())
+            assert server.connected == ()
+            assert not closing.done()
+            stop.set()
+            await closing
+            for call in (slow, held):
+                call.cancel()
+            await asyncio.gather(slow, held, return_exceptions=True)
+
+    run(test)
+
+
+def test_a_handler_can_close_the_server() -> None:
+    async def test() -> None:
+        closed = asyncio.Event()
+
+        async def close(_: Request) -> None:
+            await server.aclose()
+            closed.set()
+
+        server = Server(handlers={"close": close})
+        async with network(server) as net:
+            client = net.peer(Peer())
+            await net.join(server, "b", net.peer(Peer()))
+            await net.join(server, "a", client)
+            call = asyncio.create_task(client.request("close", timeout=5))
+            await closed.wait()
+            assert server.connected == ()
+            call.cancel()
+            await asyncio.gather(call, return_exceptions=True)
+
+    run(test)
+
+
 def test_a_closed_server_closes_a_new_connection() -> None:
     async def test() -> None:
         server = Server()

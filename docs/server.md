@@ -105,6 +105,9 @@ Stop in this order:
 After `aclose`, `request`, `request_copy` and `serve` raise `PeerClosed`. If the call of `aclose`
 is cancelled, call it again.
 
+`aclose` closes every connection and cancels every handler before it waits. A handler that is slow
+to stop delays the return of `aclose`, and no other client.
+
 Nothing waits for the handlers to finish their work. A requester keeps a request that was
 running open. It ends `expired` at its deadline, or it runs again on a server that the requester
 reaches before then, as in the

@@ -135,11 +135,20 @@ class Server:
                 del self._parties[name]
 
     async def aclose(self) -> None:
-        """Closes every ``Peer``. If this call is cancelled, call it again."""
+        """Closes every ``Peer``. If this call is cancelled, call it again.
+
+        Every connection is closed and every handler is cancelled before the first wait, so a
+        handler that takes long to stop delays no other party.
+        """
         self._closed = True
-        # One at a time, in this task: a handler that calls this must not be waited for.
-        for name, party in list(self._parties.items()):
-            await party.peer.aclose()
+        # In this task, not one task for each party: a handler that calls this must not be
+        # waited for.
+        closing = [
+            (name, party.peer, party.peer._close_now())  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+            for name, party in self._parties.items()
+        ]
+        for name, peer, waits in closing:
+            await peer._wait_closed(waits)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
             self._parties.pop(name, None)
 
     def _party(self, name: str) -> _Party:

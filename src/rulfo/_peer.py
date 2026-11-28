@@ -380,7 +380,11 @@ class Peer:
 
         Bytes that are not sent yet are dropped, also the end of a handler that just returned.
         """
-        # Everything is done before the first await, so a cancelled call leaves nothing waiting.
+        await self._wait_closed(self._close_now())
+
+    def _close_now(self) -> tuple[_Link | None, list[asyncio.Task[None]]]:
+        """The part of ``aclose`` that does not wait. Returns what ``_wait_closed`` waits for."""
+        # Everything is done here, so a cancelled ``aclose`` leaves nothing waiting.
         self._closed = True
         link = self._link
         if link is not None:
@@ -397,6 +401,10 @@ class Peer:
             task.cancel()
         self._arm()
         self._notify()
+        return link, handlers
+
+    async def _wait_closed(self, closing: tuple[_Link | None, list[asyncio.Task[None]]]) -> None:
+        link, handlers = closing
         if link is not None:
             await link.done.wait()
         await asyncio.gather(*handlers, return_exceptions=True)

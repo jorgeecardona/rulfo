@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `Server.aclose` closes every connection and cancels every handler before it waits. A handler
+  that was slow to stop kept the other clients connected.
+
 ## [0.1.12] - 2026-11-28
 
 ### Added
