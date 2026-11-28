@@ -9,6 +9,9 @@ A requester sends one request to a key. Every replier that handles the key sends
 many replies, then an end. The requester gets exactly one outcome, unless it stops waiting
 (rule 15).
 
+In the Python package a `Peer` has one remote party, so a request has one replier: the handler
+of the key on the other side.
+
 | Outcome | When |
 |---|---|
 | `completed` | Every replier sent its end, no replier refused, and every reply that was sent arrived. The number of replies can be zero. |

@@ -43,4 +43,9 @@ end. A Python package on a C core.
 - Version lives as `__version__` in `src/rulfo/__init__.py`; `pyproject.toml` reads it via
   `[tool.hatch.version]`. The pre-commit hook bumps the patch version when `src/`, `core/src`,
   `core/include` or `hatch_build.py` change. Do not edit versions by hand elsewhere.
+- `examples/` holds the programs of the guide. A docs page includes each file with
+  `--8<-- "examples/name.py"`, and `tests/test_examples.py` runs it and compares its output with
+  the `text` block of the page. Change the page when you change what an example prints.
+- The Litestar example needs `litestar` and `uvicorn` from the dev group. `scripts/test-python`
+  does not install them, so that one test is skipped there.
 - Record follow-ups in `docs/issues/`, not as scattered TODO comments.

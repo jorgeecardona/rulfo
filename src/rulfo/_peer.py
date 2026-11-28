@@ -100,12 +100,15 @@ class _Pending:
 class Request:
     """A request that a handler runs.
 
-    ``caller`` is the ``name`` of the ``Peer`` it came to: with ``Server``, the name given to
-    ``Server.serve``.
-
-    ``repeat`` means that the requester sent it before and this peer does not know the id: a
-    process that ran earlier may have run it. A handler that must not run twice across a restart
-    checks its own record when ``repeat`` is true.
+    Attributes:
+        key: The key this request was sent to.
+        body: The bytes the requester sent.
+        id: The 16-byte id chosen by the requester. The same across retries.
+        caller: The ``name`` of the ``Peer`` it came to. With ``Server``, the authenticated
+            name given to ``Server.serve``.
+        repeat: True when the requester sent this id before and this peer does not know it.
+            A process that ran earlier may have run the request. A handler that must not run
+            twice across a restart checks its own record when ``repeat`` is true.
     """
 
     def __init__(
@@ -146,9 +149,8 @@ class Peer:
     """The requests to and from one remote party, over one connection after another.
 
     Keep one ``Peer`` for each remote party, also across reconnects: it remembers the ids it ran.
-    A second ``Peer`` for the same party runs a repeated request again. A server keeps them in a
-    dict by the authenticated name of the caller, and can drop one when ``idle`` is true and no
-    connection serves it.
+    A second ``Peer`` for the same party runs a repeated request again. For many clients, use
+    ``Server``, which keeps one ``Peer`` per authenticated name and drops idle ones.
 
     Use it from one event loop.
 
@@ -158,7 +160,8 @@ class Peer:
         config: The settings.
         clock: Milliseconds that never go back and count suspended time. Processes that send
             copies of one id need a shared clock (rule 14 in the operations page).
-        name: A name for the remote party. Handlers read it as ``Request.caller``.
+        name: A name for the remote party. Handlers read it as ``Request.caller``. With
+            ``Server``, this is the authenticated name passed to ``Server.serve``.
     """
 
     def __init__(

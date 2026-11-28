@@ -1,10 +1,16 @@
-# Python
+# Peer
 
 Use `rulfo.Peer` on asyncio to send requests and to answer them over one connection. The rules
 behind it are in [Operations](operations.md), and every name is in the [API reference](api.md).
 
 Linux and macOS with CPython 3.12 or later. Free-threaded Python is not supported. There are
-wheels for Linux (x86_64 and aarch64) and macOS: other machines build the package from source, with a C compiler.
+wheels for Linux (x86_64 and aarch64) and macOS. Other machines build the package from source,
+with a C compiler.
+
+Blocks with a file name above them are complete programs from
+[`examples/`](https://gitlab.com/cardona-oss/rulfo/-/tree/main/examples): a test runs each one.
+The other blocks are fragments. They go inside an `async def`, after `import rulfo`, with `peer`
+a connected `rulfo.Peer` as in the [Quickstart](quickstart.md).
 
 ## Send a request
 
@@ -24,8 +30,9 @@ if result.outcome is rulfo.Outcome.COMPLETED:
 | `unroutable` | No handler for the key, or no connection. | Yes: it did not run. |
 | `expired` | The deadline passed first. | No: it may have run. |
 
-The four outcomes are values. `result.one()` is the short form for one reply: it returns the body
-and raises `NotCompleted` for another outcome, or `RemoteError` for an error reply.
+The four outcomes are values, not exceptions. `result.one()` is the short form for one reply: it
+returns the body. It raises `NotCompleted` for another outcome, `RemoteError` for an error reply,
+and `ValueError` for no reply or more than one. [Errors](errors.md) lists every exception.
 
 ## Answer requests
 
@@ -53,235 +60,60 @@ peer = rulfo.Peer(handlers={"greet": greet, "count": count})
 | is still running at the deadline | `expired`; the handler is cancelled |
 
 The error reply carries the text of the exception to the other side. Catch exceptions whose text
-must stay private. The `rulfo` logger records each one.
+must stay private. The `rulfo` logger records each one with its traceback.
+
+`examples/outcomes.py` has one handler for each row, and sends a request to each:
+
+```python
+--8<-- "examples/outcomes.py"
+```
+
+It prints:
+
+```text
+Before the connection
+greet: unroutable []
+Connected
+greet: completed [(b'hello world', False)]
+count: completed [(b'item 0', False), (b'item 1', False), (b'item 2', False)]
+count: completed []
+full: busy []
+unknown: unroutable []
+slow: expired []
+broken: completed [(b"ValueError: cannot read b'x'", True)]
+one() raises RemoteError: ValueError: cannot read b'x'
+```
+
+Each pair is the body of a reply and whether it is an error reply. The traceback of `broken`
+goes to the `rulfo` logger, which prints on stderr here.
 
 ## Connections
 
-`serve` uses one connection until it ends. Your program decides when to connect again:
+`serve` uses one connection until it ends. Your program decides when to connect again. This loop
+is from `examples/client.py`, where it runs as a task:
 
 ```python
-while True:
-    try:
-        reader, writer = await asyncio.open_connection(host, port)
-        await peer.serve(rulfo.StreamTransport(reader, writer))
-    except (OSError, rulfo.ProtocolError) as error:
-        print(error)
-    await asyncio.sleep(1)
+--8<-- "examples/client.py:reconnect"
 ```
 
 - A request that was sent stays open across reconnects, until its deadline.
 - Without a connection, `request` returns `unroutable` at once. `await peer.wait_connected()`
   waits for one.
 - A second call of `serve` replaces the connection of the first.
+- `serve` returns when the other side closes the connection. It raises `ProtocolError` or
+  `Overloaded` when rulfo ends it, and what the transport raises, such as `OSError`.
 - `await peer.aclose()` closes the connection, fails open requests with `PeerClosed` and cancels
   handlers. It does not send what still waits to be sent.
+- After `aclose`, a call of `serve` that runs returns, and the next call raises `PeerClosed`.
+  Cancel the task of the loop, as `examples/client.py` does, or the loop sleeps and connects
+  once more before it ends.
 
-### One Peer for each remote party
+A `Peer` remembers the ids it ran, so keep one `Peer` for each remote party, also across
+reconnects. A second `Peer` for the same party runs a repeated request again. A process with
+many clients uses `rulfo.Server`, which keeps one `Peer` for each name: see [Server](server.md).
 
-A `Peer` remembers the ids it ran. A second `Peer` for the same party runs a repeated request
-again. A server with several clients uses `rulfo.Server`, which keeps one `Peer` for each name:
-
-```python
-async def who(request: rulfo.Request) -> bytes:
-    return request.caller.encode()
-
-
-server = rulfo.Server(handlers={"who": who})
-
-
-async def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-    name = await check_caller(reader)  # your code: who is calling
-    await server.serve(name, rulfo.StreamTransport(reader, writer))
-
-
-await asyncio.start_server(accept, host, port)
-```
-
-Send a request to one client by its name:
-
-```python
-result = await server.request("worker-1", "resize", body, timeout=5)
-```
-
-- Pass a name that you checked. Whoever gives a name gets its requests.
-- A second connection with the same name replaces the first.
-- `server.connected` lists the names a request can be sent to now. For a name with no connection
-  the outcome is `unroutable`. During the handshake of a connection the call waits.
-- A `Peer` with no connection stays while it has something to remember. It is dropped when the next
-  connection arrives after that.
-- Each name has its own `Peer`: memory and the limits of `Config` count for each one.
-- `await server.aclose()` closes every `Peer`.
-
-## Transports
-
-A transport has `send`, `recv` and `close` (see `rulfo.Transport`). `send` gets at most 64 KiB
-at a time, and the cuts between chunks have no meaning.
-
-- TCP and unix sockets: `rulfo.StreamTransport`.
-- Tests: `rulfo.testing.memory_pair()`.
-- WebSockets: copy one of the two adapters below. They were run once, with Litestar 2.25.0 and
-  websockets 17.4. The tests of rulfo do not run them.
-
-rulfo does not encrypt or authenticate. Use a transport that does.
-
-### Litestar (server side)
-
-```python
-import contextlib
-
-from litestar import WebSocket, websocket
-from litestar.exceptions import WebSocketDisconnect, WebSocketException
-
-
-class LitestarTransport:
-    """Call ``await socket.accept()`` before ``peer.serve``."""
-
-    def __init__(self, socket: WebSocket) -> None:
-        self.socket = socket
-
-    async def send(self, data: bytes) -> None:
-        with contextlib.suppress(WebSocketDisconnect):  # recv reports the end
-            await self.socket.send_bytes(data)
-
-    async def recv(self) -> bytes:
-        try:
-            return await self.socket.receive_bytes()
-        except WebSocketDisconnect:
-            return b""
-
-    async def close(self) -> None:
-        with contextlib.suppress(WebSocketDisconnect, WebSocketException):
-            await self.socket.close()
-
-
-server = rulfo.Server()
-
-
-@websocket("/rulfo/{name:str}")
-async def endpoint(socket: WebSocket, name: str) -> None:
-    await socket.accept()
-    # Check here that the caller may use this name.
-    await server.serve(name, LitestarTransport(socket))
-```
-
-Both sides send binary messages only. A text message or an empty one ends the connection.
-
-### websockets (client side)
-
-```python
-import contextlib
-
-from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed
-
-
-class WebsocketsTransport:
-    def __init__(self, socket: ClientConnection) -> None:
-        self.socket = socket
-
-    async def send(self, data: bytes) -> None:
-        with contextlib.suppress(ConnectionClosed):  # recv reports the end
-            await self.socket.send(data)
-
-    async def recv(self) -> bytes:
-        try:
-            return await self.socket.recv(decode=False)
-        except ConnectionClosed:
-            return b""
-
-    async def close(self) -> None:
-        await self.socket.close()
-
-
-async for socket in connect(url):
-    await peer.serve(WebsocketsTransport(socket))
-```
-
-### Shared websocket
-
-A websocket that already carries text frames (for example, a JSON protocol) can also carry rulfo
-binary frames. The key constraint: one reader must receive every frame from the socket — including
-text frames — and route binary frames to rulfo through a queue. `serve` runs as a concurrent task
-while the reader loop continues.
-
-Do not call `socket.recv()` from inside `recv()`. `recv(decode=False)` on the websockets library
-returns text frames as bytes too, so a JSON frame would be fed into rulfo and break the connection.
-And if you call `socket.recv()` only inside `serve`, the outer read loop stalls while `serve` holds
-the socket.
-
-```python
-import asyncio
-import contextlib
-import json
-
-from websockets.asyncio.client import ClientConnection, connect
-
-
-class SharedTransport:
-    """Transport over binary frames of a shared websocket.
-
-    ``close()`` ends this transport without closing the socket. Binary frames arrive
-    through ``feed()``, called by the reader loop. Text frames never reach this
-    transport. ``serve`` must run as a task alongside the reader loop, not instead of
-    it.
-    """
-
-    def __init__(self, socket: ClientConnection) -> None:
-        self._socket = socket
-        self._queue: asyncio.Queue[bytes] = asyncio.Queue()
-        self._closed: asyncio.Event = asyncio.Event()
-
-    def feed(self, data: bytes) -> None:
-        """Put one binary frame on the queue. Called by the reader loop."""
-        self._queue.put_nowait(data)
-
-    async def send(self, data: bytes) -> None:
-        if not self._closed.is_set():
-            with contextlib.suppress(Exception):
-                await self._socket.send(data)
-
-    async def recv(self) -> bytes:
-        get_task = asyncio.create_task(self._queue.get())
-        close_task = asyncio.create_task(self._closed.wait())
-        done, pending = await asyncio.wait(
-            {get_task, close_task}, return_when=asyncio.FIRST_COMPLETED
-        )
-        for t in pending:
-            t.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await t
-        if close_task in done:
-            return b""  # transport closed; leave the socket open
-        return get_task.result()
-
-    async def close(self) -> None:
-        """End this transport. The socket is not closed."""
-        self._closed.set()
-```
-
-One reader loop receives every frame and routes it. `serve` runs as a task beside it:
-
-```python
-async for socket in connect(url):
-    transport: SharedTransport | None = None
-    serve_task: asyncio.Task[None] | None = None
-    try:
-        async for message in socket:
-            if isinstance(message, bytes):
-                if transport is not None:
-                    transport.feed(message)
-            else:
-                frame = json.loads(message)
-                if frame.get("type") == "rulfo" and frame.get("v") == 1:
-                    transport = SharedTransport(socket)
-                    serve_task = asyncio.create_task(peer.serve(transport))
-                # other text frames handled here
-    finally:
-        if transport is not None:
-            await transport.close()
-        if serve_task is not None:
-            await serve_task
-```
+What a connection can be (TCP, unix sockets, WebSockets, your own) is in
+[Transports](transports.md). rulfo does not encrypt or authenticate: use a transport that does.
 
 ## Cancel
 
@@ -332,28 +164,43 @@ its own record when it is true.
 
 ### A second process takes over
 
-`Peer.request` makes a new id each time. To let another process finish a request, choose the id and
-the deadline yourself, store them, and send them with `request_copy`:
+`Peer.request` makes a new id each time. To let another process finish a request, choose the id
+and the deadline yourself, store them, and send them with `request_copy`.
+
+All the processes read one clock, in milliseconds (rule 14 in [Operations](operations.md)). The
+default clock of a `Peer` belongs to one machine and starts at its boot. For processes on one
+machine, the wall clock works while nobody sets it back:
 
 ```python
-request_id = os.urandom(16)
-deadline_ms = clock() + 30_000
-await store(request_id, "resize", body, deadline_ms)  # your code
-result = await peer.request_copy(
-    request_id, "resize", body, deadline_ms=deadline_ms, sent_before=False
-)
+--8<-- "examples/takeover.py:clock"
+```
+
+The first process stores the request before it sends it, with `sent_before=False`. These
+fragments are from `examples/takeover.py`, a complete program where two `Peer` objects stand
+for the two processes:
+
+```python
+--8<-- "examples/takeover.py:first"
 ```
 
 The process that takes over passes the same values, with `sent_before=True`:
 
 ```python
-result = await peer.request_copy(
-    request_id, "resize", body, deadline_ms=deadline_ms, sent_before=True
-)
+--8<-- "examples/takeover.py:second"
+```
+
+The whole example prints:
+
+```text
+[worker] resize runs, repeat=False
+[api 1] stopped before the reply
+[api 2] completed b'resized 640x480'
+[worker] the handler ran 1 time
 ```
 
 A `Server` has the same call with the name first. With `sent_before=True` it also waits for a
-client that has not connected yet:
+client that has not connected yet. This fragment needs the `request_id` and `deadline_ms` that
+you stored:
 
 ```python
 result = await server.request_copy(
@@ -372,8 +219,9 @@ result = await server.request_copy(
 - All processes must reach the same `Peer` on the other side. A `Server` there needs one name for
   all of them, and only one of them connected at a time: a second connection with a name replaces
   the first.
-- All processes need one clock, in milliseconds (rule 14 in [Operations](operations.md)). Pass it
-  as `Peer(clock=...)` or `Server(clock=...)`. The default clock belongs to one machine.
+- Pass the clock as `Peer(clock=...)` or `Server(clock=...)`. Two senders may differ by at most
+  `keep` minus `handshake`: 55 s with the defaults. rulfo does not check this. Senders that
+  differ by more, or a clock that jumps, can make a request run twice.
 - Do not send an id again after you cancelled its call.
 
 ## Without asyncio

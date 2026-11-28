@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-11-28
+
+### Added
+
+- Quickstart page: a server and a client as two processes, and what the client prints when you
+  stop the server during a request.
+- Server page: a token check before rulfo starts, TLS, memory for each client, the order to shut
+  down, and what `Server` does not have.
+- Transports page: the rules for a transport of your own, a Litestar server and a websockets
+  client that run together, and one WebSocket for text messages and rulfo.
+- Errors page: every exception, when it is raised and what to do.
+- Testing page: a pytest file that tests a handler in memory, also across a reconnect.
+- `examples/`: 11 programs. The guide shows them, and a test runs each one and compares its
+  output with the page.
+
+### Changed
+
+- The guide is now six pages: Quickstart, Peer, Server, Transports, Errors, Testing.
+- The reconnect loop of the guide also catches `Overloaded`, and the page says how to end it
+  after `aclose`.
+- The `request_copy` example is a program that runs, with a clock that two processes share.
+- The API reference lists `Peer` and `Server` first, in groups, without the source code.
+- `CONTRIBUTING.md` names the five CI jobs.
+
+### Fixed
+
+- The example for a WebSocket with text messages: it ran only with a fake socket. It now runs
+  with the websockets library.
+
 ## [0.1.11] - 2026-11-28
 
 ### Added
@@ -44,18 +73,18 @@ First release on PyPI.
 
 ### Added
 
-- Wire format version 1 and the `request` operation, in `docs/`.
-- Outcome `busy` for a refused request; `replied` is now `completed`; 16 capability bits.
-- Deadlines are times on the requester's clock; a new CLOCK frame lets a replier convert them, so
+- Wire format version 1 and the `request` operation, documented in `docs/`.
+- Outcome `busy` for a refused request; the completed outcome is now named `completed`;
+  16 capability bits in the handshake.
+- Deadlines are times on the requester's clock; a CLOCK frame lets a replier convert them, so
   a copy that waits in a buffer cannot run twice.
-- A replier can send its replies again when a request comes again, so replies lost in a reconnect
-  no longer force `expired`.
-- C frame codec for wire format version 1, with a libFuzzer target, in `core/`; the header
-  can be read and written without the key and the body.
-- Model of request and replies with N repliers, a deadline and faults, in `models/`.
-- `rf_peer` in C: handshake, requests, ordered replies, one outcome, resend after a reconnect,
-  a store of ids, busy refusal and sending replies again. A test replays model runs on it.
+- A replier stores its replies and sends them again when the requester reconnects, so replies
+  lost in a reconnect no longer force `expired`.
+- C frame codec for wire format version 1, with a libFuzzer target, in `core/`.
+- Model of request and replies with a deadline and faults, in `models/`.
+- C core: handshake, requests, ordered replies, one outcome per request, resend after a
+  reconnect, a store of ids, busy refusal. A conformance test replays model runs against it.
 - Python package: `Peer` on asyncio with handlers, outcomes and deadlines, `PeerState` without
   I/O, TCP and unix socket transport, and a memory transport for tests.
 - A wheel for CPython 3.12 and later on Linux x86_64.
-- A requester can stop waiting for a request (`rf_abandon`, a cancelled `request`).
+- Cancelling the task that awaits `request` stops the wait without sending anything.

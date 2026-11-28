@@ -8,5 +8,5 @@ cd "$(CDPATH= cd "$(dirname "$0")/.." && pwd)"
 for python; do
     echo "== CPython $python"
     uv run --isolated --python "$python" --with-editable . --with pytest --with pytest-parallex \
-        --with musil pytest
+        --with musil --with websockets pytest
 done

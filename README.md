@@ -11,7 +11,8 @@
 </p>
 
 <p align="center">
-  <a href="https://cardona-oss.gitlab.io/rulfo/python/">Python guide</a> ·
+  <a href="https://cardona-oss.gitlab.io/rulfo/quickstart/">Quickstart</a> ·
+  <a href="https://cardona-oss.gitlab.io/rulfo/python/">Guide</a> ·
   <a href="https://cardona-oss.gitlab.io/rulfo/operations/">Operations</a> ·
   <a href="https://cardona-oss.gitlab.io/rulfo/model/">Model</a> ·
   <a href="https://cardona-oss.gitlab.io/rulfo/api/">API reference</a> ·
@@ -152,8 +153,8 @@ schema, or a language other than Python. rulfo has none of them.
 - A request that a second process can take over: `request_copy` sends an id and a deadline that you
   stored.
 - Any ordered byte stream: TCP and unix sockets with `rulfo.StreamTransport`, and a memory
-  transport for tests. Two WebSocket adapters to copy are in the
-  [Python guide](https://cardona-oss.gitlab.io/rulfo/python/#transports).
+  transport for tests. Two WebSocket adapters to copy are in
+  [Transports](https://cardona-oss.gitlab.io/rulfo/transports/).
 - `rulfo.PeerState`: the same logic without I/O and without a clock, for another event loop.
 - The rules are checked with a [musil](https://pypi.org/project/musil/) model. A test replays
   12000 random runs of that model on the library.
@@ -170,12 +171,21 @@ schema, or a language other than Python. rulfo has none of them.
   the handler sees `request.repeat` as true.
 - `request` keeps all replies in memory until the outcome.
 - Cancelling the task that awaits `request` does not stop the handler on the other side.
-- The model covers small cases only. [Model](https://cardona-oss.gitlab.io/rulfo/model/) lists what it proves and what it does
-  not.
+- The model covers small cases only. [Model](https://cardona-oss.gitlab.io/rulfo/model/) lists
+  what it proves and what it does not.
 
 ## Links
 
 - Documentation: <https://cardona-oss.gitlab.io/rulfo/>
+- [Quickstart](https://cardona-oss.gitlab.io/rulfo/quickstart/): a server and a client as two
+  processes, and what a client gets when the server stops during a request
+- Guide: [Peer](https://cardona-oss.gitlab.io/rulfo/python/),
+  [Server](https://cardona-oss.gitlab.io/rulfo/server/),
+  [Transports](https://cardona-oss.gitlab.io/rulfo/transports/),
+  [Errors](https://cardona-oss.gitlab.io/rulfo/errors/),
+  [Testing](https://cardona-oss.gitlab.io/rulfo/testing/)
+- [Examples](https://gitlab.com/cardona-oss/rulfo/-/tree/main/examples): the programs of the
+  guide, each run by a test
 - [Wire format](https://cardona-oss.gitlab.io/rulfo/wire-format/): the bytes, version 1
 - Repository: <https://gitlab.com/cardona-oss/rulfo>
 - PyPI: <https://pypi.org/project/rulfo/>

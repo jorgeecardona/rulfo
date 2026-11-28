@@ -57,7 +57,7 @@ packages = ["src/rulfo"]
 path = "hatch_build.py"
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "hatch_build.py", "core", "scripts/core-test", "scripts/core-fuzz", "scripts/test-python", "models", "tests", "README.md", "CHANGELOG.md", "LICENSE"]
+include = ["src", "hatch_build.py", "core", "scripts/core-test", "scripts/core-fuzz", "scripts/test-python", "models", "tests", "examples", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [tool.uv]
 # The version is dynamic (hatchling reads __version__ from the file below), so uv must watch it too:
@@ -80,6 +80,9 @@ dev = [
     "musil>=0.36.12",
     "pytest-parallex>=0.2.8",
     "hatchling",
+    "websockets>=15",
+    "litestar>=2.25",
+    "uvicorn>=0.30",
 ]
 
 [tool.pytest.ini_options]
@@ -124,12 +127,15 @@ convention = "pep257"
 "tests/**/*.py" = ["S101", "PLR2004", "ARG", "ANN401", "PT018"]
 # A model prints its verdicts when run as a script (T201).
 "models/**/*.py" = ["T201"]
+# An example is a script that a reader runs (INP001) and that prints (T201). A handler takes a
+# request also when it does not read it (ARG001). The example tests assert (S101, PLR2004).
+"examples/**/*.py" = ["INP001", "T201", "ARG001", "S101", "PLR2004"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["rulfo"]
 
 [tool.pyright]
-include = ["src", "models", "tests"]
+include = ["src", "models", "tests", "examples"]
 extraPaths = ["src", "models"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"

@@ -47,6 +47,7 @@ markdown_extensions:
   - pymdownx.snippets:
       base_path: [".", "docs"]
       check_paths: true
+      dedent_subsections: true
   - pymdownx.details
   - pymdownx.tabbed:
       alternate_style: true
@@ -65,7 +66,7 @@ plugins:
           options:
             show_root_heading: true
             heading_level: 3
-            show_source: true
+            show_source: false
             members_order: source
             separate_signature: true
             show_signature_annotations: true
@@ -76,9 +77,15 @@ plugins:
         end. A Python package on a C core, for asyncio.
       full_output: llms-full.txt
       sections:
-        Usage documentation:
+        Guide:
           - index.md
+          - quickstart.md
           - python.md
+          - server.md
+          - transports.md
+          - errors.md
+          - testing.md
+        Protocol:
           - operations.md
           - wire-format.md
           - model.md
@@ -87,9 +94,16 @@ plugins:
 
 nav:
   - Home: index.md
-  - Python: python.md
-  - Operations: operations.md
-  - Wire format: wire-format.md
-  - Model: model.md
+  - Guide:
+    - Quickstart: quickstart.md
+    - Peer: python.md
+    - Server: server.md
+    - Transports: transports.md
+    - Errors: errors.md
+    - Testing: testing.md
+  - Protocol:
+    - Operations: operations.md
+    - Wire format: wire-format.md
+    - Model: model.md
   - API reference: api.md
   - Changelog: changelog.md
